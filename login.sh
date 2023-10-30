@@ -8,17 +8,20 @@
 USER=`who | grep "console" | cut -d" " -f1`
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 MacName=$( scutil --get ComputerName)
-echo $CurrentUSER
 uid=$(id -u "$CurrentUSER") 
-LibCopied=0
 
-# Set logfile
+# Set logfile location
 SYNCLOG="/tmp/LibrarySync.log"
+
+# Rotate the log
 if [ -f "$SYNCLOG" ]; then 
   mv "$SYNCLOG" "/tmp/LibrarySynclog-`date`.log"
 fi
+
 touch "$SYNCLOG"
 chmod 777 "$SYNCLOG"
+
+# Not sure what this permission grant is for
 chmod 777 /usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut
 
 ###########
@@ -27,7 +30,7 @@ chmod 777 /usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut
 
 WriteToLogs() {
   local message="$1"
-  local now=$( date +%T )
+  local now=$(date "+%Y-%m-%d %T")
   echo "$now - $message" >> "$SYNCLOG"
   echo "$now - $message"
 }
@@ -36,16 +39,14 @@ RunAsUser() {
   if [ "$CurrentUSER" != "loginwindow" ]; then
     launchctl asuser "$uid" sudo -u "$CurrentUSER" "$@"
   else
-    WriteToLogs "No user logged in"
-    # uncomment the exit command
-    # to make the function exit with an error when no user is logged in
-    #exit 1
+    WriteToLogs "No user logged in."
+    exit 1
   fi
 }
 
-CheckIfADAccount()  {
-  loggedInUser=$(stat -f%Su /dev/console)
-  accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
+CheckIfADAccount() {
+  local loggedInUser=$(stat -f%Su /dev/console)
+  local accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
 
   if [ "$accountCheck" != "" ]; then
     WriteToLogs "User $loggedInUser is an AD account"
@@ -56,9 +57,8 @@ CheckIfADAccount()  {
   fi
 }
 
-CheckADUserType()  {
-  accountCheck=$(dscl . read /Users/$CurrentUSER OriginalAuthenticationAuthority 2>/dev/null)
-  echo "checking AD"
+CheckADUserType() {
+  local accountCheck=$(dscl . read /Users/$CurrentUSER OriginalAuthenticationAuthority 2>/dev/null)
   
   if [ "$accountCheck" != "" ] && [[ $CurrentUSER = [0-9]* ]]; then
     WriteToLogs "User $CurrentUSER is a student account"
@@ -69,7 +69,7 @@ CheckADUserType()  {
   fi
 }
 
-CheckStudentFolderPath()  {
+CheckStudentFolderPath() {
   if [ -d /Volumes/$CurrentUSER ]; then
     MYHOMEDIR=/Volumes/$CurrentUSER
   fi
@@ -81,7 +81,7 @@ CheckStudentFolderPath()  {
   fi
 }
 
-CheckStaffFolderPath()  {
+CheckStaffFolderPath() {
   if [ -d /Volumes/$CurrentUSER ]; then
     MYHOMEDIR=/Volumes/$CurrentUSER
   fi
@@ -96,48 +96,52 @@ CheckStaffFolderPath()  {
 RedirectIfADAccount()  {
   WriteToLogs "Started $funcstack[1] function"
   
-  # Redirect home folders to server
+  # Redirect home folders to server.
+  # If the plist file already exists, this should already be complete, so is skipped.
   if [ ! -f /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist ]; then
-    echo "Redirecting folders to $MYHOMEDIR for $CurrentUSER" >> "$SYNCLOG"
-    echo "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
+    WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
     
-    mounted=1
-    folders=("Pictures" "Documents" "Downloads" "Desktop")
-    
-    echo "starting redirects"
+    local mounted=1
+    local folders=(
+      "Pictures"
+      "Documents"
+      "Downloads"
+      "Desktop"
+    )
     
     while [ $mounted -gt 0 ]; do
       if [ -d "$MYHOMEDIR" ]; then
-        echo "`date` - $MYHOMEDIR exists"
+        WriteToLogs "$MYHOMEDIR exists"
         
         for i in "${folders[@]}"; do
           if [ -d "$MYHOMEDIR/$i" ]; then
-            echo "$i available"
+            WriteToLogs "$i available"
           else
-            echo "$i not available, creating...."
+            WriteToLogs "$i not available, creating..."
             mkdir "$MYHOMEDIR/$i"
           fi
           
-          echo "testing symlinks"
+          WriteToLogs "Testing symlinks"
           
           if [ ! -L /Users/$CurrentUSER/$i ]; then
-            echo "$i folder not linked, now linking"
-            chmod -R 777 /Users/$CurrentUSER/$I
+            WriteToLogs "$i folder not linked, now linking"
+            chmod -R 777 /Users/$CurrentUSER/$i
             rm -R /Users/$CurrentUSER/$i
             ln -s "$MYHOMEDIR/$i" /Users/$CurrentUSER/
           else
-            echo "$i already linked, going away now"
+            WriteToLogs "$i was already linked"
           fi
         done
         
         mounted=`expr $mounted - 1`
+        
       else
-        echo "$MYHOMEDIR not available, waiting..."
-        echo "sleeping"
+        WriteToLogs "$MYHOMEDIR not available yet, waiting..."
         sleep 5
       fi
     done
     
+    # Generate a plist to indicate this process is complete
     touch /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist
     chown $CurrentUSER /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist
     chmod 755 /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist
@@ -149,25 +153,31 @@ RedirectIfADAccount()  {
 PinRedirectedFolders()  {
   WriteToLogs "Started $funcstack[1] function"
   
+  function remove_mysides() {
+    local uid="$1"
+    shift  # Shift arguments so $2 becomes $1, $3 becomes $2, etc.
+    for name in "$@"; do
+      launchctl asuser "$uid" /usr/local/bin/mysides remove "$name"
+    done
+  }
+  
+  function add_mysides() {
+    local uid="$1"
+    shift  # Shift arguments so $2 becomes $1, $3 becomes $2, etc.
+    for name in "$@"; do
+      launchctl asuser "$uid" /usr/local/bin/mysides add "$name" file:///Users/$CurrentUSER/$name
+    done
+  }
+  
   uid=$(id -u "$CurrentUSER")
   
   # Remove default pinned Sidebar folders
-  launchctl asuser $uid /usr/local/bin/mysides remove "Downloads"
-  launchctl asuser $uid /usr/local/bin/mysides remove "Documents"
-  launchctl asuser $uid /usr/local/bin/mysides remove "Pictures"
-  launchctl asuser $uid /usr/local/bin/mysides remove "Music"
-  launchctl asuser $uid /usr/local/bin/mysides remove "Desktop"
-  launchctl asuser $uid /usr/local/bin/mysides remove "Library"
+  remove_mysides $uid "Desktop" "Downloads" "Documents" "Pictures" "Music" "Library"
   
   # Pin new Sidebar folders
-  launchctl asuser $uid /usr/local/bin/mysides add "Desktop" file:///Users/$CurrentUSER/Desktop
-  launchctl asuser $uid /usr/local/bin/mysides add "Documents" file:///Users/$CurrentUSER/Documents
-  launchctl asuser $uid /usr/local/bin/mysides add "Downloads" file:///Users/$CurrentUSER/Downloads
-  launchctl asuser $uid /usr/local/bin/mysides add "Library" file:///Users/$CurrentUSER/Library
-  launchctl asuser $uid /usr/local/bin/mysides add "Music" file:///Users/$CurrentUSER/Music
-  launchctl asuser $uid /usr/local/bin/mysides add "Movies" file:///Users/$CurrentUSER/Movies
-  launchctl asuser $uid /usr/local/bin/mysides add "Pictures" file:///Users/$CurrentUSER/Pictures
+  add_mysides $uid "Desktop" "Downloads" "Documents" "Pictures" "Music" "Library"
   
+  # Generate a plist to indicate this process is complete
   touch /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.PinFolders.plist
   chown $CurrentUSER /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.PinFolders.plist
   chmod 755 $CurrentUSER /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.PinFolders.plist
@@ -179,48 +189,46 @@ CreateHomeLibraryFolders()  {
   WriteToLogs "Started $funcstack[1] function"
 
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
-    echo "Library available"
+    WriteToLogs "Library available"
+    
+    # Generate plists to indicate this process is complete
     touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-    LibCopied=1
   else
     chmod -R 777 $MYHOMEDIR
     
+    # First create the root Library folder
     if [ ! -d "$MYHOMEDIR/Library" ]; then
       mkdir "$MYHOMEDIR/Library"
       chown $CurrentUSER "$MYHOMEDIR/Library"
-    fi       
-    
-    if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
-      mkdir "$MYHOMEDIR/Library/Preferences"
-      chown $CurrentUSER "$MYHOMEDIR/Library/Preferences"
-      chmod -R 777 "$MYHOMEDIR/Library/Preferences"
-    fi 
-    
-    if [ ! -d "$MYHOMEDIR/Library/PreferencePanes" ]; then
-      mkdir "$MYHOMEDIR/Library/PreferencePanes"
-      chown $CurrentUSER "$MYHOMEDIR/Library/PreferencePanes"
-      chmod -R 777 "$MYHOMEDIR/Library/PreferencePanes"
-    fi        
-    
-    if [ ! -d $MYHOMEDIR/Library/Safari ]; then
-      mkdir $MYHOMEDIR/Library/Safari
-      chown $CurrentUSER $MYHOMEDIR/Library/Safari
-      chmod -R 777 $MYHOMEDIR/Library/Safari
-    fi        
-    
-    if [ ! -d $MYHOMEDIR/Library/Saved\ Application\ State ]; then
-      mkdir $MYHOMEDIR/Library/Saved\ Application\ State
-      chown $CurrentUSER $MYHOMEDIR/Library/Saved\ Application\ State
-      chmod -R 777 $MYHOMEDIR/Library/Saved\ Application\ State
     fi
     
-    if [ ! -d $MYHOMEDIR/Library/SyncedPreferences ]; then
-      mkdir $MYHOMEDIR/Library/SyncedPreferences
-      chown $CurrentUSER $MYHOMEDIR/Library/SyncedPreferences
-      chmod -R 777 $MYHOMEDIR/Library/SyncedPreferences
-    fi
+    # Function to create the subfolder if needed, then adjust its ownership and perms
+    create_and_set_permissions() {
+      local dir_path="$1"
+      local owner="$2"
+      
+      if [ ! -d "$dir_path" ]; then
+        mkdir "$dir_path"
+        chown "$owner" "$dir_path"
+        chmod -R 777 "$dir_path"
+      fi
+    }
     
+    # Set of Library folders to create
+    local directories=(
+      "Preferences"
+      "PreferencePanes"
+      "Safari"
+      "Saved Application State"
+      "SyncedPreferences"
+    )
+    
+    for dir in "${directories[@]}"; do
+      create_and_set_permissions "$MYHOMEDIR/Library/$dir" "$CurrentUSER"
+    done
+    
+    # Generate plists to indicate this process is complete
     touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
   fi 
@@ -548,6 +556,8 @@ SyncHomeLibraryToLocal() {
 ###############
 # Main Sequence
 ###############
+
+WriteToLogs "Current User: $CurrentUSER"
 
 touch /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.LogonScriptRun.plist
 chown $CurrentUser /Users/$CurrentUSER/Library/Preferences/com.apple.dock.plist
