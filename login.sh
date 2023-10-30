@@ -4,33 +4,27 @@
 # Login script to handle various folder redirections. 
 #####################################################
 
-# Set initial variables
-USER=`who | grep "console" | cut -d" " -f1`
+# Set global variables.
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
-MacName=$( scutil --get ComputerName)
-uid=$(id -u "$CurrentUSER")
-
-# funcstack will be used for simpler logging
-setopt FUNCSTACK
-
-# Set logfile location
 SYNCLOG="/tmp/LibrarySync.log"
 
-# Rotate the log
+# funcstack will be used for simpler logging.
+setopt FUNCSTACK
+
+# Rotate the logs.
 if [ -f "$SYNCLOG" ]; then 
   mv "$SYNCLOG" "/tmp/LibrarySynclog-`date`.log"
 fi
 
 touch "$SYNCLOG"
 chmod 777 "$SYNCLOG"
-
-# Not sure what this permission grant is for
 chmod 777 /usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut
 
 ###########
-# Functions
+# FUNCTIONS
 ###########
 
+# Logs to both the console and the global logfile.
 WriteToLogs() {
   local message="$1"
   local now=$(date "+%Y-%m-%d %T")
@@ -38,15 +32,17 @@ WriteToLogs() {
   echo "$now - $message"
 }
 
+# Runs a command as the currently logged-in user.
 RunAsUser() {  
   if [ "$CurrentUSER" != "loginwindow" ]; then
-    launchctl asuser "$uid" sudo -u "$CurrentUSER" "$@"
+    launchctl asuser "$(id -u "$CurrentUSER")" sudo -u "$CurrentUSER" "$@"
   else
-    WriteToLogs "No user logged in."
-    exit 1
+    WriteToLogs "No user logged in." >&2
+    return 1
   fi
 }
 
+# Batch folder creation and permission setting.
 CreateFolderAndSetPermissions() {
   local dir_path="$1"
   local owner="$2"
@@ -58,6 +54,7 @@ CreateFolderAndSetPermissions() {
   fi
 }
 
+# Check if the current user is an AD account.
 CheckIfADAccount() {
   local loggedInUser=$(stat -f%Su /dev/console)
   local accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
@@ -71,6 +68,7 @@ CheckIfADAccount() {
   fi
 }
 
+# Check if the current user is a student or staff.
 CheckADUserType() {
   local accountCheck=$(dscl . read /Users/$CurrentUSER OriginalAuthenticationAuthority 2>/dev/null)
   
@@ -83,34 +81,29 @@ CheckADUserType() {
   fi
 }
 
-CheckStudentFolderPath() {
+# Set the global MYHOMEDIR variable based on the mounted home directory path.
+# Pass "Student" or "Staff" to this.
+CheckFolderPath() {
+  local userType="$1"
+
   if [ -d /Volumes/$CurrentUSER ]; then
     MYHOMEDIR=/Volumes/$CurrentUSER
   fi
   
-  if [ -d /Volumes/StudentHome\$ ]; then 
-    MYHOMEDIR=/Volumes/StudentHome\$/$CurrentUSER
+  local homeDirUpper="/Volumes/${userType}Home\$/"
+  local homeDirLower="/Volumes/${userType}home\$/"
+
+  if [ -d "$homeDirUpper$CurrentUSER" ]; then 
+    MYHOMEDIR="${homeDirUpper}${CurrentUSER}"
   else
-    MYHOMEDIR=/Volumes/Studenthome\$/$CurrentUSER
+    MYHOMEDIR="${homeDirLower}${CurrentUSER}"
   fi
 }
 
-CheckStaffFolderPath() {
-  if [ -d /Volumes/$CurrentUSER ]; then
-    MYHOMEDIR=/Volumes/$CurrentUSER
-  fi
-  
-  if [ -d /Volumes/StaffHome\$ ]; then 
-    MYHOMEDIR=/Volumes/StaffHome\$/$CurrentUSER
-  else
-    MYHOMEDIR=/Volumes/Staffhome\$/$CurrentUSER
-  fi
-}
-
+# Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount()  {
   WriteToLogs "Started $funcstack[1] function"
   
-  # Redirect home folders to server.
   # If the plist file already exists, this should already be complete, so is skipped.
   if [ ! -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
     WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
@@ -123,6 +116,7 @@ RedirectIfADAccount()  {
       "Desktop"
     )
     
+    # This has a try/sleep cycle to ensure that the remote home directory has finished mounting.
     while [ $mounted -gt 0 ]; do
       if [ -d "$MYHOMEDIR" ]; then
         WriteToLogs "$MYHOMEDIR exists"
@@ -155,15 +149,16 @@ RedirectIfADAccount()  {
       fi
     done
     
-    # Generate a plist to indicate this process is complete
+    # Generate a plist to indicate this process is complete.
     touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
     chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
-    chmod 755 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
+    chmod 777 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
   fi
   
  WriteToLogs "Finished $funcstack[1] function"
 }
 
+# Replace the default pinned Sidebar folders with new shortcuts.
 PinRedirectedFolders()  {
   WriteToLogs "Started $funcstack[1] function"
   
@@ -442,7 +437,7 @@ SyncHomeLibraryToLocal() {
     for (( n=0; n < ${#libfolders[@]}; n++ )); do
       chown -R $CurrentUSER "/Users/$CurrentUSER/Library/${libfolders[n]}"
       chmod -R 777 "/Users/$CurrentUSER/Library/${libfolders[n]}"
-      rsync -avz --exclude=".*" "$MYHOMEDIR/Library/${libfolders[n]}/" "/Users/$USER/Library/${libfolders[n]}/"
+      rsync -avz --exclude=".*" "$MYHOMEDIR/Library/${libfolders[n]}/" "/Users/$CurrentUSER/Library/${libfolders[n]}/"
       WriteToLogs "rsync code for ${libfolders[n]} from home is $?"
     done
     
@@ -454,7 +449,7 @@ SyncHomeLibraryToLocal() {
 }
 
 ###############
-# Main Sequence
+# MAIN SEQUENCE
 ###############
 
 WriteToLogs "Current User: $CurrentUSER"
@@ -470,12 +465,10 @@ fi
 
 RunAsUser osascript -e 'display alert "Please wait while we set up your profile."'
 
-if [ "$ADUser" = "Student" ]; then  
-  CheckStudentFolderPath
+if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
+  CheckFolderPath "$ADUser"
 else
-  if [ "$ADUser" = "Staff" ]; then
-    CheckStaffFolderPath
-  fi
+  WriteToLogs "Unknown ADUser value: $ADUser" 
 fi
   
 WriteToLogs "Home Folder is $MYHOMEDIR"
