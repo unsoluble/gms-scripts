@@ -10,27 +10,33 @@ CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /
 MacName=$( scutil --get ComputerName)
 echo $CurrentUSER
 uid=$(id -u "$CurrentUSER") 
-Libcopied=0
+LibCopied=0
 
 # Set logfile
-if [ -f "/private/tmp/LibrarySync.log" ]; then 
-  mv  "/private/tmp/LibrarySync.log" "/private/tmp/LibrarySynclog-`date`.log"
+SYNCLOG="/tmp/LibrarySync.log"
+if [ -f "$SYNCLOG" ]; then 
+  mv "$SYNCLOG" "/tmp/LibrarySynclog-`date`.log"
 fi
-
-sleep 1
-touch /private/tmp/LibrarySync.log
-chmod 777 /private/tmp/LibrarySync.log
+touch "$SYNCLOG"
+chmod 777 "$SYNCLOG"
 chmod 777 /usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut
 
 ###########
 # Functions
 ###########
 
+WriteToLogs() {
+  local message="$1"
+  local now=$( date +%T )
+  echo "$now - $message" >> "$SYNCLOG"
+  echo "$now - $message"
+}
+
 RunAsUser() {  
   if [ "$CurrentUSER" != "loginwindow" ]; then
     launchctl asuser "$uid" sudo -u "$CurrentUSER" "$@"
   else
-    echo "no user logged in"
+    WriteToLogs "No user logged in"
     # uncomment the exit command
     # to make the function exit with an error when no user is logged in
     #exit 1
@@ -42,10 +48,10 @@ CheckIfADAccount()  {
   accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
 
   if [ "$accountCheck" != "" ]; then
-    echo "User $loggedInUser is an AD account"
+    WriteToLogs "User $loggedInUser is an AD account"
     AD=1
   else
-    echo "User $loggedInUser is a local account"
+    WriteToLogs "User $loggedInUser is a local account"
     AD=0
   fi
 }
@@ -55,12 +61,10 @@ CheckADUserType()  {
   echo "checking AD"
   
   if [ "$accountCheck" != "" ] && [[ $CurrentUSER = [0-9]* ]]; then
-    echo "`date` - User $CurrentUSER is a student account" >> /tmp/LibrarySync.log
-    echo "`date` - User $CurrentUSER is a student account"
+    WriteToLogs "User $CurrentUSER is a student account"
     ADUser='Student'
   else
-    echo "`date` - User $CurrentUSER is a staff AD account"  >> /tmp/LibrarySync.log
-    echo "`date` - User $CurrentUSER is a staff AD account"
+    WriteToLogs "User $CurrentUSER is a staff account"
     ADUser='Staff'
   fi
 }
@@ -90,13 +94,11 @@ CheckStaffFolderPath()  {
 }
 
 RedirectIfADAccount()  {
-  now=$( date +%T )
-  echo "Start RedirectIfADAccount function - $now" >> /tmp/LibrarySync.log 
-  echo "Start RedirectIfADAccount function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   # Redirect home folders to server
   if [ ! -f /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist ]; then
-    echo "Redirecting folders to $MYHOMEDIR for $CurrentUSER" >> /tmp/LibrarySync.log 
+    echo "Redirecting folders to $MYHOMEDIR for $CurrentUSER" >> "$SYNCLOG"
     echo "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
     
     mounted=1
@@ -141,12 +143,12 @@ RedirectIfADAccount()  {
     chmod 755 /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist
   fi
   
-  now=$( date +%T )
-  echo "Finish RedirectIfADAccount function - $now" >> /tmp/LibrarySync.log 
-  echo "Finish RedirectIfADAccount function - $now"
+ WriteToLogs "Finsihed $funcstack[1] function"
 }        
 
 PinRedirectedFolders()  {
+  WriteToLogs "Started $funcstack[1] function"
+  
   uid=$(id -u "$CurrentUSER")
   
   # Remove default pinned Sidebar folders
@@ -169,18 +171,18 @@ PinRedirectedFolders()  {
   touch /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.PinFolders.plist
   chown $CurrentUSER /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.PinFolders.plist
   chmod 755 $CurrentUSER /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.PinFolders.plist
+  
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 CreateHomeLibraryFolders()  {
-  now=$( date +%T )
-  echo "Start CreateHomeLibraryFolder function - $now" >> /tmp/LibrarySync.log 
-  echo "Start CreateHomeLibraryFolder function - $now"
+  WriteToLogs "Started $funcstack[1] function"
 
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
     echo "Library available"
     touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-    Libcopied=1
+    LibCopied=1
   else
     chmod -R 777 $MYHOMEDIR
     
@@ -223,15 +225,11 @@ CreateHomeLibraryFolders()  {
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
   fi 
   
-  now=$( date +%T )
-  echo "Finish CreateHomeLibraryFolder function - $now" >> /tmp/LibrarySync.log 
-  echo "Finish CreateHomeLibraryFolder function - $now"    
+  WriteToLogs "Started $funcstack[1] function" 
 }
 
 CreateDocumentLibraryFolders() {
-  now=$( date +%T )
-  echo "Start CreateDocumentLibraryFolders function - $now" >> /tmp/LibrarySync.log 
-  echo "Start CreateDocumentLibraryFolders function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   # Create Application Support Folders in Documents
   if [ ! -d /Users/$CurrentUSER/Documents/Application\ Support ]; then
@@ -289,15 +287,11 @@ CreateDocumentLibraryFolders() {
     chown -R $CurrentUSER /Users/$CurrentUSER/Documents/Application\ Support
   fi 
   
-  now=$( date +%T )
-  echo "Finish CreateDocumentLibraryFolders function - $now" >> /tmp/LibrarySync.log 
-  echo "Finish CreateDocumentLibraryFolders function - $now"
+ WriteToLogs "Finished $funcstack[1] function"
 }
 
 PreStageUnlinkedAppFolders() {
-  now=$( date +%T )
-  echo "Start PreStageUnlinkedAppFolders function - $now" >> /tmp/LibrarySync.log 
-  echo "Start PreStageUnlinkedAppFolders function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   # Create Application Support Folders in Library and in Music
   if [ ! -d /Users/$CurrentUSER/Library/Application\ Support ]; then
@@ -341,15 +335,11 @@ PreStageUnlinkedAppFolders() {
     chmod -R 777 /Users/$CurrentUSER/Library/Application\ Support/Google
   fi
   
-  now=$( date +%T )
-  echo "Finish PreStageUnlinkedAppFolders function - $now" >> /tmp/LibrarySync.log 
-  echo "Finishe PreStageUnlinkedAppFolders function - $now"
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 LinkLibraryFolders() {  
-  now=$( date +%T )
-  echo "Start LinkLibraryFolders function - $now" >> /tmp/LibrarySync.log 
-  echo "Start LinkLibraryFolders function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   # Symlink minecraft folders to machine local shared
   if [ ! -d /Users/Shared/minecraft ]; then
@@ -422,15 +412,11 @@ LinkLibraryFolders() {
     fi
   done 
   
-  now=$( date +%T )
-  echo "Finish LinkLibraryFolders function - $now" >> /tmp/LibrarySync.log 
-  echo "Finish LinkLibraryFolders function - $now"
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 LinkTwineFolders() { 
-  now=$( date +%T )
-  echo "Start LinkTwineFolders Function - $now" >> /tmp/LibrarySync.log 
-  echo "Start LinkTwineFolders Function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   if [ -d /Users/$CurrentUSER/Twine ]; then
     echo "Twine folder available"
@@ -448,21 +434,17 @@ LinkTwineFolders() {
     echo "Twine subfolder already linked, going away now"
   fi
   
-  now=$( date +%T )
-  echo "Finished LinkTwineFolders Function - $now" >> /tmp/LibrarySync.log 
-  echo "Finished LinkTwineFolders Function - $now"
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 FixLibraryPerms() {
-  now=$( date +%T )
-  echo "Start FixLibraryPerms function - $now" >> /tmp/LibrarySync.log 
-  echo "Start FixLibraryPerms function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   if [ ! "$(stat -f '%A' /Applications/Minecraft.app/Contents/MacOS/launcher)" = 777 ]; then
     chown -R root:wheel /Applications/Minecraft.app 
     chmod -R 777 /Applications/Minecraft.app/Contents/MacOS/launcher
     now=$( date +%T )
-    echo "$now - Set permissions for Minecraft" >> /tmp/LibrarySync.log 
+    echo "$now - Set permissions for Minecraft" >> "$SYNCLOG"
   fi
   
   if [ ! "$(stat -f '%A' /Users/$CurrentUSER/Library/Application\ Support/minecraft)" = 777 ]; then
@@ -479,22 +461,18 @@ FixLibraryPerms() {
   
   if [ ! "$(stat -f '%A' /Users/$CurrentUSER/Music/GarageBand)" = 777 ]; then
     chmod -R 777 /Users/$CurrentUSER/Music/GarageBand
-    echo "$now - Set permissions for Music Folder" >> /tmp/LibrarySync.log 
+    echo "$now - Set permissions for Music Folder" >> "$SYNCLOG"
   fi
   
   if [ ! "$(stat -f '%A' /Users/$CurrentUSER/Library/Application\ Support/Google)" = "777" ]; then
     chmod -R 777 /Users/$CurrentUSER/Library/Application\ Support/Google
   fi 
   
-  now=$( date +%T )
-  echo "Finished FixLibraryPerms function - $now" >> /tmp/LibrarySync.log 
-  echo "Finished FixLibraryPerms function - $now"  
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 CopyRoamingAppFiles() {
-  now=$( date +%T )
-  echo "Start copy of roaming App file at $now" >> /tmp/LibrarySync.log 
-  echo "Start copy of roaming App file at $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   ### Minecraft Files
   if [ ! -d /Users/$CurrentUSER/Library/Application\ Support/minecraft/launcher ]; then
@@ -512,18 +490,20 @@ CopyRoamingAppFiles() {
   chmod -R 777 /Users/Shared/minecraft
   
   now=$( date +%T )
-  echo "$now - Copied Minecraft" >> /tmp/LibrarySync.log
+  echo "$now - Copied Minecraft" >> "$SYNCLOG"
   echo "$now - Copied Minecraft"
   
   ### Garageband Files
   rsync -rua /Users/$CurrentUSER/Documents/GarageBand/ /Users/$CurrentUSER/Music/GarageBand/
-  echo "$now - Copied GarageBand Folder" >> /tmp/LibrarySync.log 
+  echo "$now - Copied GarageBand Folder" >> "$SYNCLOG"
   echo "$now - Copied GarageBand Folder"
   
   ### Twine Files
   rsync -rua /Users/$CurrentUSER/Documents/Sync/Twine/ /Users/$CurrentUSER/Twine/
-  echo "$now - Copied Twine Folders" >> /tmp/LibrarySync.log 
-  echo "$now - Copied Twine Folders"   
+  echo "$now - Copied Twine Folders" >> "$SYNCLOG"
+  echo "$now - Copied Twine Folders"
+  
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 OnExit() {
@@ -531,12 +511,10 @@ OnExit() {
 }
 
 SyncHomeLibraryToLocal() {
-  now=$( date +%T )
-  echo "Start SyncHomeLibraryToLocal Function - $now" >> /tmp/LibrarySync.log 
-  echo "Start SyncHomeLibraryToLocal Function - $now"
+  WriteToLogs "Started $funcstack[1] function"
   
   if [ -f "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" ]; then
-    echo "`date` - Start sync from home for $CurrentUSER" >> /tmp/LibrarySync.log
+    echo "`date` - Start sync from home for $CurrentUSER" >> "$SYNCLOG"
     echo "`date` - Start sync from home for $CurrentUSER"
     # RunAsUser osascript -e 'display alert "Sync From Home" message "Your Library is downloading."' &
     now=$( date +%T )
@@ -556,7 +534,7 @@ SyncHomeLibraryToLocal() {
       chmod -R 777 "/Users/$CurrentUSER/Library/${libfolders[n]}"
       # chmod -R 777 "$MYHOMEDIR/Library/${libfolders[n]}"
       rsync -rua --exclude=".*" "$MYHOMEDIR/Library/${libfolders[n]}/" "/Users/$USER/Library/${libfolders[n]}/"
-      echo "$now - rsync code for ${libfolders[n]} from home is $?" >> /tmp/LibrarySync.log 
+      echo "$now - rsync code for ${libfolders[n]} from home is $?" >> "$SYNCLOG"
       echo "$now - rsync code for ${libfolders[n]} from home is $?"
     done
     
@@ -564,9 +542,7 @@ SyncHomeLibraryToLocal() {
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist"        
   fi
   
-  now=$( date +%T )
-  echo "Finished SyncHomeLibraryToLocal Function - $now" >> /tmp/LibrarySync.log 
-  echo "Finished SyncHomeLibraryToLocal Function - $now"
+  WriteToLogs "Finished $funcstack[1] function"
 }
 
 ###############
@@ -587,15 +563,15 @@ if [ "$ADUser" = "Student" ]; then
   
   CheckStudentFolderPath
   
-  echo "Home Folder is $MYHOMEDIR" >> /tmp/LibrarySync.log 
+  echo "Home Folder is $MYHOMEDIR" >> "$SYNCLOG"
   echo "Home Folder is $MYHOMEDIR"
   
   if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
     CreateHomeLibraryFolders
-    echo "Creating Library template" >> /tmp/LibrarySync.log 
+    echo "Creating Library template" >> "$SYNCLOG"
     echo "Creating Library template"
   else
-    echo "Home Library exists already" >> /tmp/LibrarySync.log 
+    echo "Home Library exists already" >> "$SYNCLOG"
     echo "Home Library exists already"
   fi
   
@@ -606,7 +582,7 @@ if [ "$ADUser" = "Student" ]; then
     Echo "Redirected folders already pinned"
   else
     if [ -f /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist ] ; then
-      echo "Pinning folders to sidebar" >> /tmp/LibrarySync.log 
+      echo "Pinning folders to sidebar" >> "$SYNCLOG"
       echo "Pinning folders to sidebar"
       PinRedirectedFolders
     fi
@@ -640,7 +616,7 @@ if [ "$ADUser" = "Staff" ]; then
   RunAsUser osascript -e 'display alert "Please wait while we set up your profile."'
   
   CheckStaffFolderPath
-  echo "Home Folder is $MYHOMEDIR" >> /tmp/LibrarySync.log 
+  echo "Home Folder is $MYHOMEDIR" >> "$SYNCLOG"
   echo "Home Folder is $MYHOMEDIR"
   
   RedirectIfADAccount
@@ -650,7 +626,7 @@ if [ "$ADUser" = "Staff" ]; then
     Echo "Redirected folders already pinned"
   else
     if [ -f /Users/$CurrentUSER/Library/Application\ Support/com.gvsd.RedirectedFolders.plist ] ; then
-      echo "Pinning folders to sidebar" >> /tmp/LibrarySync.log 
+      echo "Pinning folders to sidebar" >> "$SYNCLOG"
       echo "Pinning folders to sidebar"
       PinRedirectedFolders
     fi
@@ -661,7 +637,7 @@ if [ "$ADUser" = "Staff" ]; then
 fi
 
 # Start the library sync back to home
-echo "`date` - Start sync back to home for $CurrentUSER" >> /tmp/LibrarySync.log 
+echo "`date` - Start sync back to home for $CurrentUSER" >> "$SYNCLOG"
 echo "`date` - Start sync back to home for $CurrentUSER"
 
 #jamf policy -event synctohome &&
