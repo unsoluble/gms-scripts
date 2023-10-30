@@ -6,19 +6,17 @@
 
 # Set initial variables
 USER=`who | grep "console" | cut -d" " -f1`
-
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
-
 MacName=$( scutil --get ComputerName)
 echo $CurrentUSER
 uid=$(id -u "$CurrentUSER") 
 Libcopied=0
 
- 
 # Set logfile
 if [ -f "/private/tmp/LibrarySync.log" ]; then 
   mv  "/private/tmp/LibrarySync.log" "/private/tmp/LibrarySynclog-`date`.log"
 fi
+
 sleep 1
 touch /private/tmp/LibrarySync.log
 chmod 777 /private/tmp/LibrarySync.log
