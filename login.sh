@@ -1,4 +1,4 @@
-﻿#!/bin/zsh
+﻿#!/bin/bash
 
 ####################################################################################
 # Script to handle folder redirections and permissions for student & staff logins. #
@@ -8,13 +8,12 @@
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
-# Enabling this feature for simpler logging calls throughout the script.
-setopt FUNCSTACK
-
 # Rotate the logs.
-if [ -f "$SYNCLOG" ]; then 
+if [ -f "$SYNCLOG" ]; then
   mv "$SYNCLOG" "/tmp/LibrarySync-$(date +%Y-%m-%d_%H-%M-%S).log"
 fi
+# Delete archived logs older than 2 days.
+find /tmp -name "LibrarySync-*.log" -mtime +2 -exec rm {} \;
 
 touch "$SYNCLOG"
 chmod 777 "$SYNCLOG"
@@ -66,6 +65,8 @@ CheckIfADAccount() {
   else
     WriteToLogs "User $loggedInUser is a local account"
     AD=0
+    # TEMP OVERRIDE:
+    AD=1
   fi
 }
 
@@ -104,7 +105,7 @@ CheckFolderPath() {
 # Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount()  {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   # If the plist file already exists, this should already be complete, so is skipped.
   if [ ! -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
@@ -159,13 +160,13 @@ RedirectIfADAccount()  {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 # Replace the default pinned Sidebar folders with new shortcuts.
 PinRedirectedFolders()  {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   function remove_mysides() {
     local uid="$1"
@@ -198,12 +199,12 @@ PinRedirectedFolders()  {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 CreateHomeLibraryFolders()  {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   # If the SyncedPreferences folder exists, this creation routine should already be complete.
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
@@ -242,12 +243,12 @@ CreateHomeLibraryFolders()  {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 CreateDocumentLibraryFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   # Set of folders to create
   local directories=(
@@ -269,12 +270,12 @@ CreateDocumentLibraryFolders() {
 
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 PreStageUnlinkedAppFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   local directories=(
     "Library/Application Support"
@@ -293,12 +294,12 @@ PreStageUnlinkedAppFolders() {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 LinkLibraryFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   # Symlink Minecraft folders to machine local shared
   mkdir -p "/Users/Shared/minecraft"
@@ -359,12 +360,12 @@ LinkLibraryFolders() {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 LinkTwineFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   mkdir -p "/Users/$CurrentUSER/Twine"
   chmod -R 777 "/Users/$CurrentUSER/Twine"
@@ -379,12 +380,12 @@ LinkTwineFolders() {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 FixLibraryPerms() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   adjust_permissions() {
     local dir_path="$1"
@@ -399,7 +400,7 @@ FixLibraryPerms() {
     fi
   }
   
-    adjust_permissions "/Applications/Minecraft.app/Contents/MacOS/launcher" "777" "root" "wheel"
+    adjust_permissions "/Applications/Minecraft.app" "777"
     adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "777"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "777"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "777" "$CurrentUSER"
@@ -410,12 +411,12 @@ FixLibraryPerms() {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 CopyRoamingAppFiles() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
   local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
@@ -441,12 +442,12 @@ CopyRoamingAppFiles() {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 SyncHomeLibraryToLocal() {
   local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started $funcstack[1] function"
+  WriteToLogs "Started ${FUNCNAME[0]} function"
   
   if [ -f "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" ]; then
     WriteToLogs "Start sync from home for $CurrentUSER"
@@ -474,7 +475,7 @@ SyncHomeLibraryToLocal() {
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
+  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
 }
 
 OnExit() {
@@ -484,7 +485,7 @@ OnExit() {
 #################
 # MAIN SEQUENCE #
 #################
-
+WriteToLogs "Login script started."
 WriteToLogs "Current User: $CurrentUSER"
 
 touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
@@ -494,6 +495,9 @@ CheckIfADAccount
 
 if [ $AD = "1" ]; then
   CheckADUserType
+else
+  WriteToLogs "Current user is not an AD account."
+  exit 1
 fi
 
 RunAsUser osascript -e 'display alert "Please wait while we set up your profile."'
@@ -506,7 +510,9 @@ fi
   
 WriteToLogs "Home Folder is $MYHOMEDIR"
 
-if [ "$ADUser" = "Student" ]; then 
+# if [ "$ADUser" = "Student" ]; then
+# TEMP OVERRIDE:
+if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
   if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
     CreateHomeLibraryFolders
   else
@@ -524,7 +530,9 @@ elif [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFo
   PinRedirectedFolders
 fi
   
-if [ "$ADUser" = "Student" ]; then 
+# if [ "$ADUser" = "Student" ]; then
+# TEMP OVERRIDE:
+if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
   if [ ! -d "/Users/$CurrentUSER/Documents/Sync" ]; then 
     CreateDocumentLibraryFolders
   fi
@@ -539,10 +547,12 @@ if [ "$ADUser" = "Student" ]; then
 fi
 
 # Not sure yet why this sleep is required
-sleep 5
+# sleep 5
 
 FixLibraryPerms
 CopyRoamingAppFiles
+
+WriteToLogs "Login script complete."
 RunAsUser osascript -e 'display alert "You are good to go. Thank you for waiting."'
 
 if [ "$ADUser" = "Student" ]; then
