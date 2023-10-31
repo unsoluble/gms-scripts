@@ -102,6 +102,7 @@ CheckFolderPath() {
 
 # Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount()  {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   # If the plist file already exists, this should already be complete, so is skipped.
@@ -155,11 +156,14 @@ RedirectIfADAccount()  {
     chmod 777 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
   fi
   
- WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 # Replace the default pinned Sidebar folders with new shortcuts.
 PinRedirectedFolders()  {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   function remove_mysides() {
@@ -191,10 +195,13 @@ PinRedirectedFolders()  {
   chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
   chmod 755 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 CreateHomeLibraryFolders()  {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
 
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
@@ -230,10 +237,13 @@ CreateHomeLibraryFolders()  {
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
   fi 
   
-  WriteToLogs "Finished $funcstack[1] function" 
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 CreateDocumentLibraryFolders() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   # Set of Documents folders to create
@@ -254,10 +264,13 @@ CreateDocumentLibraryFolders() {
     CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
   done
 
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 PreStageUnlinkedAppFolders() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   local directories=(
@@ -275,10 +288,13 @@ PreStageUnlinkedAppFolders() {
     CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
   done
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
-LinkLibraryFolders() {  
+LinkLibraryFolders() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   # Symlink Minecraft folders to machine local shared
@@ -338,10 +354,13 @@ LinkLibraryFolders() {
     fi
   done 
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
-LinkTwineFolders() { 
+LinkTwineFolders() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   mkdir -p "/Users/$CurrentUSER/Twine"
@@ -355,10 +374,13 @@ LinkTwineFolders() {
     WriteToLogs "Twine subfolder already linked"
   fi
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 FixLibraryPerms() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   adjust_permissions() {
@@ -383,10 +405,13 @@ FixLibraryPerms() {
     adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "777"
     adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "777"
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 CopyRoamingAppFiles() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
@@ -411,7 +436,9 @@ CopyRoamingAppFiles() {
   rsync -avz "/Users/$CurrentUSER/Documents/GarageBand/" "/Users/$CurrentUSER/Music/GarageBand/"  
   rsync -avz "/Users/$CurrentUSER/Documents/Sync/Twine/" "/Users/$CurrentUSER/Twine/"
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 OnExit() {
@@ -419,6 +446,7 @@ OnExit() {
 }
 
 SyncHomeLibraryToLocal() {
+  local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
   if [ -f "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" ]; then
@@ -445,7 +473,9 @@ SyncHomeLibraryToLocal() {
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist"        
   fi
   
-  WriteToLogs "Finished $funcstack[1] function"
+  local end_time=$(date +%s)  # Capture end time in seconds
+  local duration=$((end_time - start_time))  # Calculate duration
+  WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
 ###############

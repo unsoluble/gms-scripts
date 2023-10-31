@@ -17,13 +17,12 @@ RSYNC_PAIRS=(
 )
 
 # Set up a unique logfile for the current user
-USER=`who | grep "console" | cut -d" " -f1`
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 RSYNC_LOG="/tmp/${CurrentUSER}_logout_log.txt"
 
 # Notifier UI paths
 APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
-ICON_PATH="/Library/Scripts/GVSD/logout_icon.png" # (will change to wherever we end up storing the icon)
+ICON_PATH="/Library/Scripts/GVSD/logout_icon.png"
 
 # Variables for the confirmation dialog
 CONF_BAR_TITLE="Save & Log Out"
@@ -146,7 +145,7 @@ if [ "$continue" -eq 0 ] || [ "$continue" -eq 4 ]; then
     fi
     
     # Log out the user
-    # osascript -e 'tell application "loginwindow" to «event aevtrlgo»'
+    osascript -e 'tell application "loginwindow" to «event aevtrlgo»'
 else
     echo "Logout cancelled."
     exit 1
