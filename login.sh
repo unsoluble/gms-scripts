@@ -1,8 +1,8 @@
 ﻿#!/bin/zsh
 
-##################################################################################
-# Script to handle folder redirections and permissions for student & staff logins.
-##################################################################################
+####################################################################################
+# Script to handle folder redirections and permissions for student & staff logins. #
+####################################################################################
 
 # Set global variables.
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
@@ -20,9 +20,9 @@ touch "$SYNCLOG"
 chmod 777 "$SYNCLOG"
 chmod 777 "/usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut"
 
-###########
-# FUNCTIONS
-###########
+#############
+# FUNCTIONS #
+#############
 
 # Logs to both the console and the global logfile.
 WriteToLogs() {
@@ -43,6 +43,7 @@ RunAsUser() {
 }
 
 # Batch folder creation and permission setting.
+# Pass a directory and a userID to this.
 CreateFolderAndSetPermissions() {
   local dir_path="$1"
   local owner="$2"
@@ -203,7 +204,8 @@ PinRedirectedFolders()  {
 CreateHomeLibraryFolders()  {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
-
+  
+  # If the SyncedPreferences folder exists, this creation routine should already be complete.
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
     WriteToLogs "Library available"
     
@@ -211,7 +213,8 @@ CreateHomeLibraryFolders()  {
     touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
   else
-    chmod -R 777 "$MYHOMEDIR"
+    # This chmod seems excessive here; removing for now
+    # chmod -R 777 "$MYHOMEDIR"
     
     # First create the root Library folder
     if [ ! -d "$MYHOMEDIR/Library" ]; then
@@ -246,7 +249,7 @@ CreateDocumentLibraryFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started $funcstack[1] function"
   
-  # Set of Documents folders to create
+  # Set of folders to create
   local directories=(
     "Documents/Application Support"
     "Documents/Application Support/minecraft"
@@ -417,7 +420,7 @@ CopyRoamingAppFiles() {
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
   local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
   
-  # Sync the Ninecraft saves directory
+  # Sync the Minecraft saves directory
   rsync -avz "$srcBase/saves/" "$destBase/saves/"
   
   # Sync individual Minecraft settings files
@@ -439,10 +442,6 @@ CopyRoamingAppFiles() {
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
   WriteToLogs "Finished $funcstack[1] function in $duration seconds"
-}
-
-OnExit() {
-  jamf policy -event synctohome
 }
 
 SyncHomeLibraryToLocal() {
@@ -478,9 +477,13 @@ SyncHomeLibraryToLocal() {
   WriteToLogs "Finished $funcstack[1] function in $duration seconds"
 }
 
-###############
-# MAIN SEQUENCE
-###############
+OnExit() {
+  jamf policy -event synctohome
+}
+
+#################
+# MAIN SEQUENCE #
+#################
 
 WriteToLogs "Current User: $CurrentUSER"
 
@@ -514,13 +517,11 @@ fi
 RedirectIfADAccount
   
 # Pin redirected folders
-if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist" ] ; then
+if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist" ]; then
   WriteToLogs "Redirected folders already pinned"
-else
-  if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ] ; then
-    WriteToLogs "Pinning folders to sidebar"
-    PinRedirectedFolders
-  fi
+elif [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
+  WriteToLogs "Pinning folders to sidebar"
+  PinRedirectedFolders
 fi
   
 if [ "$ADUser" = "Student" ]; then 
@@ -536,7 +537,8 @@ if [ "$ADUser" = "Student" ]; then
   SyncHomeLibraryToLocal
   LinkTwineFolders
 fi
-  
+
+# Not sure yet why this sleep is required
 sleep 5
 
 FixLibraryPerms
