@@ -1,14 +1,14 @@
 ﻿#!/bin/zsh
 
-#####################################################
-# Login script to handle various folder redirections. 
-#####################################################
+##################################################################################
+# Script to handle folder redirections and permissions for student & staff logins.
+##################################################################################
 
 # Set global variables.
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
-# funcstack will be used for simpler logging.
+# Enabling this feature for simpler logging calls throughout the script.
 setopt FUNCSTACK
 
 # Rotate the logs.
@@ -18,7 +18,7 @@ fi
 
 touch "$SYNCLOG"
 chmod 777 "$SYNCLOG"
-chmod 777 /usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut
+chmod 777 "/usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut"
 
 ###########
 # FUNCTIONS
