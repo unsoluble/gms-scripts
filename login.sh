@@ -13,7 +13,7 @@ setopt FUNCSTACK
 
 # Rotate the logs.
 if [ -f "$SYNCLOG" ]; then 
-  mv "$SYNCLOG" "/tmp/LibrarySynclog-`date`.log"
+  mv "$SYNCLOG" "/tmp/LibrarySync-$(date +%Y-%m-%d_%H-%M-%S).log"
 fi
 
 touch "$SYNCLOG"
