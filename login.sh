@@ -73,6 +73,7 @@ CreateFolderAndSetPermissions() {
 }
 
 # Check if the current user is an AD account.
+# Sets the global $AD variable to 1 for AD, 0 for local.
 CheckIfADAccount() {
   local loggedInUser=$(stat -f%Su /dev/console)
   local accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
@@ -87,6 +88,7 @@ CheckIfADAccount() {
 }
 
 # Check if the current user is a student or staff.
+# Sets the global $ADUser variable to "Student" or "Staff".
 CheckADUserType() {
   local accountCheck=$(dscl . read /Users/$CurrentUSER OriginalAuthenticationAuthority 2>/dev/null)
   
@@ -99,7 +101,7 @@ CheckADUserType() {
   fi
 }
 
-# Set the global MYHOMEDIR variable based on the mounted home directory path.
+# Set the global $MYHOMEDIR variable based on the mounted home directory path.
 # Pass "Student" or "Staff" to this.
 CheckFolderPath() {
   local userType="$1"
@@ -122,6 +124,7 @@ CheckFolderPath() {
 RedirectIfADAccount()  {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  # Write the current function name to the UI progress window as well.
   echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   # If the plist file already exists, this should already be complete, so is skipped.
