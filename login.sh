@@ -8,6 +8,24 @@
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
+# Notifier UI paths.
+APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
+
+# Variables for the progress dialog.
+PROG_BAR_TITLE="Logging In"
+PROG_TITLE="Syncing your files! Your stuff will be ready when this finishes."
+PROG_TIMEOUT_SECONDS=300
+PROG_ACCESSORY_TYPE="progressbar"
+PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
+                        /user_interruption_allowed false \
+                        /exit_on_completion true"
+
+# Set up a temporary pipe for the sync progress window.
+PIPE_NAME="login_pipe"
+rm -f "/tmp/${PIPE_NAME}"
+mkfifo "/tmp/${PIPE_NAME}"
+exec 3<> "/tmp/${PIPE_NAME}"
+
 # Rotate the logs.
 if [ -f "$SYNCLOG" ]; then
   mv "$SYNCLOG" "/tmp/LibrarySync-$(date +%Y-%m-%d_%H-%M-%S).log"
@@ -65,8 +83,6 @@ CheckIfADAccount() {
   else
     WriteToLogs "User $loggedInUser is a local account"
     AD=0
-    # TEMP OVERRIDE:
-    AD=1
   fi
 }
 
@@ -106,6 +122,7 @@ CheckFolderPath() {
 RedirectIfADAccount()  {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   # If the plist file already exists, this should already be complete, so is skipped.
   if [ ! -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
@@ -167,6 +184,7 @@ RedirectIfADAccount()  {
 PinRedirectedFolders()  {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   function remove_mysides() {
     local uid="$1"
@@ -205,6 +223,7 @@ PinRedirectedFolders()  {
 CreateHomeLibraryFolders()  {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   # If the SyncedPreferences folder exists, this creation routine should already be complete.
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
@@ -249,6 +268,7 @@ CreateHomeLibraryFolders()  {
 CreateDocumentLibraryFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   # Set of folders to create
   local directories=(
@@ -276,6 +296,7 @@ CreateDocumentLibraryFolders() {
 PreStageUnlinkedAppFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   local directories=(
     "Library/Application Support"
@@ -300,6 +321,7 @@ PreStageUnlinkedAppFolders() {
 LinkLibraryFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   # Symlink Minecraft folders to machine local shared
   mkdir -p "/Users/Shared/minecraft"
@@ -366,6 +388,7 @@ LinkLibraryFolders() {
 LinkTwineFolders() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   mkdir -p "/Users/$CurrentUSER/Twine"
   chmod -R 777 "/Users/$CurrentUSER/Twine"
@@ -386,6 +409,7 @@ LinkTwineFolders() {
 FixLibraryPerms() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   adjust_permissions() {
     local dir_path="$1"
@@ -417,6 +441,7 @@ FixLibraryPerms() {
 CopyRoamingAppFiles() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
   local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
@@ -448,6 +473,7 @@ CopyRoamingAppFiles() {
 SyncHomeLibraryToLocal() {
   local start_time=$(date +%s)  # Capture start time in seconds
   WriteToLogs "Started ${FUNCNAME[0]} function"
+  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   if [ -f "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" ]; then
     WriteToLogs "Start sync from home for $CurrentUSER"
@@ -485,75 +511,99 @@ OnExit() {
 #################
 # MAIN SEQUENCE #
 #################
-WriteToLogs "Login script started."
-WriteToLogs "Current User: $CurrentUSER"
 
-touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
-chown $CurrentUser "/Users/$CurrentUSER/Library/Preferences/com.apple.dock.plist"
-
-CheckIfADAccount
-
-if [ $AD = "1" ]; then
-  CheckADUserType
-else
-  WriteToLogs "Current user is not an AD account."
-  exit 1
-fi
-
-RunAsUser osascript -e 'display alert "Please wait while we set up your profile."'
-
-if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
-  CheckFolderPath "$ADUser"
-else
-  WriteToLogs "Unknown ADUser value: $ADUser" 
-fi
+# Wrap the sequence in a progress UI.
+display_progress() {
+  # Launch the IBM Notifier app UI with the following config, and background it.
+  "${APP_PATH}" \
+    -type "popup" \
+    -silent \
+    -position top_left \
+    -title "${PROG_TITLE}" \
+    -bar_title "${PROG_BAR_TITLE}" \
+    -accessory_view_type "${PROG_ACCESSORY_TYPE}" \
+    -timeout "${PROG_TIMEOUT_SECONDS}" \
+    -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "/tmp/${PIPE_NAME}" &
   
-WriteToLogs "Home Folder is $MYHOMEDIR"
+  # Store the Notifier UI process ID so we can kill it later.
+  Notifier_Process=$(pgrep "IBM Notifier")
 
-# if [ "$ADUser" = "Student" ]; then
-# TEMP OVERRIDE:
-if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
-  if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
-    CreateHomeLibraryFolders
+  WriteToLogs "Login script started."
+  WriteToLogs "Current User: $CurrentUSER"
+  
+  touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
+  chown $CurrentUser "/Users/$CurrentUSER/Library/Preferences/com.apple.dock.plist"
+
+  CheckIfADAccount
+  
+  if [ $AD = "1" ]; then
+    CheckADUserType
   else
-    WriteToLogs "Home Library exists already"
-  fi
-fi
-
-RedirectIfADAccount
-  
-# Pin redirected folders
-if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist" ]; then
-  WriteToLogs "Redirected folders already pinned"
-elif [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
-  WriteToLogs "Pinning folders to sidebar"
-  PinRedirectedFolders
-fi
-  
-# if [ "$ADUser" = "Student" ]; then
-# TEMP OVERRIDE:
-if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
-  if [ ! -d "/Users/$CurrentUSER/Documents/Sync" ]; then 
-    CreateDocumentLibraryFolders
+    WriteToLogs "Current user is not an AD account."
+    exit 1
   fi
   
-  if [ ! -d "/Users/$CurrentUSER/Library/Application Support/Google/Chrome/Profile 1" ]; then 
-    PreStageUnlinkedAppFolders
+  if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
+    CheckFolderPath "$ADUser"
+  else
+    WriteToLogs "Unknown ADUser value: $ADUser" 
+  fi
+    
+  WriteToLogs "Home Folder is $MYHOMEDIR"
+  
+  # if [ "$ADUser" = "Student" ]; then
+  # OVERRIDE to do these functions for Staff as well:
+  if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
+    if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
+      CreateHomeLibraryFolders
+    else
+      WriteToLogs "Home Library exists already"
+    fi
   fi
   
-  LinkLibraryFolders
-  SyncHomeLibraryToLocal
-  LinkTwineFolders
-fi
+  RedirectIfADAccount
+    
+  # Pin redirected folders
+  if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist" ]; then
+    WriteToLogs "Redirected folders already pinned"
+  elif [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
+    WriteToLogs "Pinning folders to sidebar"
+    PinRedirectedFolders
+  fi
+    
+  # if [ "$ADUser" = "Student" ]; then
+  # OVERRIDE to do these functions for Staff as well:
+  if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
+    if [ ! -d "/Users/$CurrentUSER/Documents/Sync" ]; then 
+      CreateDocumentLibraryFolders
+    fi
+    
+    if [ ! -d "/Users/$CurrentUSER/Library/Application Support/Google/Chrome/Profile 1" ]; then 
+      PreStageUnlinkedAppFolders
+    fi
+    
+    LinkLibraryFolders
+    SyncHomeLibraryToLocal
+    LinkTwineFolders
+  fi
+  
+  FixLibraryPerms
+  CopyRoamingAppFiles
+  
+  WriteToLogs "Login script complete."
+  echo -n "/bottom_message Done!" >&3
+  
+  # Tell the progress UI to close, and clean up.
+  echo -n "/percent 100" >&3
+  exec 3>&-
+  rm -f "/tmp/${PIPE_NAME}"
+  
+  # Fully kill the Notifier UI.
+  kill -TERM "$Notifier_Process"
+}
 
-# Not sure yet why this sleep is required
-# sleep 5
-
-FixLibraryPerms
-CopyRoamingAppFiles
-
-WriteToLogs "Login script complete."
-RunAsUser osascript -e 'display alert "You are good to go. Thank you for waiting."'
+# Do the main sequence, wrapped by the progress UI.
+display_progress
 
 if [ "$ADUser" = "Student" ]; then
   trap OnExit exit
