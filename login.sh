@@ -65,11 +65,9 @@ CreateFolderAndSetPermissions() {
   local dir_path="$1"
   local owner="$2"
   
-  if [ ! -d "$dir_path" ]; then
-    mkdir -p "$dir_path"
-    chown "$owner" "$dir_path"
-    chmod -R 777 "$dir_path"
-  fi
+  mkdir -p "$dir_path"
+  chown "$owner" "$dir_path"
+  chmod -R 700 "$dir_path"
 }
 
 # Check if the current user is an AD account.
@@ -595,7 +593,6 @@ display_progress() {
   CopyRoamingAppFiles
   
   WriteToLogs "Login script complete."
-  echo -n "/bottom_message Done!" >&3
   
   # Tell the progress UI to close, and clean up.
   echo -n "/percent 100" >&3
