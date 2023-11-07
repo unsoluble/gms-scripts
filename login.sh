@@ -493,7 +493,8 @@ SyncHomeLibraryToLocal() {
     
     for (( n=0; n < ${#libfolders[@]}; n++ )); do
       chown -R $CurrentUSER "/Users/$CurrentUSER/Library/${libfolders[n]}"
-      chmod -R 777 "/Users/$CurrentUSER/Library/${libfolders[n]}"
+      # Removing this, as it doesn't appear to be necessary.
+      # chmod -R 777 "/Users/$CurrentUSER/Library/${libfolders[n]}"
       rsync -avz --exclude=".*" "$MYHOMEDIR/Library/${libfolders[n]}/" "/Users/$CurrentUSER/Library/${libfolders[n]}/"
       WriteToLogs "rsync code for ${libfolders[n]} from home is $?"
     done
@@ -517,20 +518,6 @@ OnExit() {
 
 # Wrap the sequence in a progress UI.
 display_progress() {
-  # Launch the IBM Notifier app UI with the following config, and background it.
-  "${APP_PATH}" \
-    -type "popup" \
-    -silent \
-    -position top_left \
-    -title "${PROG_TITLE}" \
-    -bar_title "${PROG_BAR_TITLE}" \
-    -accessory_view_type "${PROG_ACCESSORY_TYPE}" \
-    -timeout "${PROG_TIMEOUT_SECONDS}" \
-    -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "/tmp/${PIPE_NAME}" &
-  
-  # Store the Notifier UI process ID so we can kill it later.
-  Notifier_Process=$(pgrep "IBM Notifier")
-
   WriteToLogs "Login script started."
   WriteToLogs "Current User: $CurrentUSER"
   
@@ -545,6 +532,20 @@ display_progress() {
     WriteToLogs "Current user is not an AD account."
     exit 1
   fi
+  
+  # Launch the IBM Notifier app UI with the following config, and background it.
+  "${APP_PATH}" \
+    -type "popup" \
+    -silent \
+    -position top_left \
+    -title "${PROG_TITLE}" \
+    -bar_title "${PROG_BAR_TITLE}" \
+    -accessory_view_type "${PROG_ACCESSORY_TYPE}" \
+    -timeout "${PROG_TIMEOUT_SECONDS}" \
+    -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "/tmp/${PIPE_NAME}" &
+  
+  # Store the Notifier UI process ID so we can kill it later.
+  Notifier_Process=$(pgrep "IBM Notifier")
   
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
     CheckFolderPath "$ADUser"
