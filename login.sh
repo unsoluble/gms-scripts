@@ -14,7 +14,6 @@ APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
 # Variables for the progress dialog.
 PROG_BAR_TITLE="Logging In"
 PROG_TITLE="Syncing your files! Your stuff will be ready when this finishes."
-PROG_TIMEOUT_SECONDS=300
 PROG_ACCESSORY_TYPE="progressbar"
 PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
                         /user_interruption_allowed false \
@@ -367,7 +366,7 @@ LinkLibraryFolders() {
     else
       WriteToLogs "$x not available, creating..."
       mkdir -p "/Users/$CurrentUSER/Documents/Application Support/$x"
-      chmod -R 777 "/Users/$CurrentUSER/Documents/Application Support/$x"
+      chown $CurrentUSER "/Users/$CurrentUSER/Documents/Application Support/$x"
     fi
     
     WriteToLogs "Testing symlinks"
@@ -392,7 +391,7 @@ LinkTwineFolders() {
   echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   mkdir -p "/Users/$CurrentUSER/Twine"
-  chmod -R 777 "/Users/$CurrentUSER/Twine"
+  chown $CurrentUSER "/Users/$CurrentUSER/Twine"
   
   if [ ! -L "/Users/$CurrentUSER/Documents/Twine" ]; then
     WriteToLogs "Twine is not linked, now linking..."
@@ -426,13 +425,13 @@ FixLibraryPerms() {
   }
   
     adjust_permissions "/Applications/Minecraft.app" "777"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "777"
-    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "777"
-    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "777" "$CurrentUSER"
     adjust_permissions "/Users/Shared/minecraft/assets" "777" "root" "wheel"
-    adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "777"
-    adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "777"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "777"
+    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "700"
+    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700"
+    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
+    adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "700"
+    adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "700"
+    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "700"
   
   local end_time=$(date +%s)  # Capture end time in seconds
   local duration=$((end_time - start_time))  # Calculate duration
@@ -491,8 +490,6 @@ SyncHomeLibraryToLocal() {
     
     for (( n=0; n < ${#libfolders[@]}; n++ )); do
       chown -R $CurrentUSER "/Users/$CurrentUSER/Library/${libfolders[n]}"
-      # Removing this, as it doesn't appear to be necessary.
-      # chmod -R 777 "/Users/$CurrentUSER/Library/${libfolders[n]}"
       rsync -avz --exclude=".*" "$MYHOMEDIR/Library/${libfolders[n]}/" "/Users/$CurrentUSER/Library/${libfolders[n]}/"
       WriteToLogs "rsync code for ${libfolders[n]} from home is $?"
     done
