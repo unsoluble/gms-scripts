@@ -32,6 +32,9 @@ fi
 # Delete archived logs older than 2 days.
 find /tmp -name "LibrarySync-*.log" -mtime +2 -exec rm {} \;
 
+# Declare a global for the function logging routines.
+FUNC_START_TIME=""
+
 touch "$SYNCLOG"
 chmod 777 "$SYNCLOG"
 chmod 777 "/usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut"
@@ -46,6 +49,20 @@ WriteToLogs() {
   local now=$(date "+%Y-%m-%d %T")
   echo "$now - $message" >> "$SYNCLOG"
   echo "$now - $message"
+}
+
+# Log the start of a function, and capture the time for its duration.
+StartFunctionLog() {
+  FUNC_START_TIME=$(date +%s)
+  WriteToLogs "Started ${FUNCNAME[1]} function" # FUNCNAME[1] is the name of the calling function
+  echo -n "/bottom_message Starting ${FUNCNAME[1]}..." >&3
+}
+
+# Log the end of a function and its total duration.
+EndFunctionLog() {
+  local end_time=$(date +%s)
+  local duration=$((end_time - FUNC_START_TIME))
+  WriteToLogs "### Finished ${FUNCNAME[1]} function in $duration seconds"
 }
 
 # Runs a command as the currently logged-in user.
@@ -119,10 +136,7 @@ CheckFolderPath() {
 
 # Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount()  {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  # Write the current function name to the UI progress window as well.
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   # If the plist file already exists, this should already be complete, so is skipped.
   if [ ! -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
@@ -175,16 +189,12 @@ RedirectIfADAccount()  {
     chmod 777 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
   fi
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 # Replace the default pinned Sidebar folders with new shortcuts.
 PinRedirectedFolders()  {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   function remove_mysides() {
     local uid="$1"
@@ -215,15 +225,11 @@ PinRedirectedFolders()  {
   chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
   chmod 755 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 CreateHomeLibraryFolders()  {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   # If the SyncedPreferences folder exists, this creation routine should already be complete.
   if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
@@ -260,15 +266,11 @@ CreateHomeLibraryFolders()  {
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
   fi 
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 CreateDocumentLibraryFolders() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   # Set of folders to create
   local directories=(
@@ -288,15 +290,11 @@ CreateDocumentLibraryFolders() {
     CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
   done
 
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 PreStageUnlinkedAppFolders() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   local directories=(
     "Library/Application Support"
@@ -313,15 +311,11 @@ PreStageUnlinkedAppFolders() {
     CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
   done
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 LinkLibraryFolders() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   # Symlink Minecraft folders to machine local shared
   mkdir -p "/Users/Shared/minecraft" || WriteToLogs "Failed to create directory /Users/Shared/minecraft"
@@ -380,15 +374,11 @@ LinkLibraryFolders() {
     fi
   done 
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 LinkTwineFolders() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   mkdir -p "/Users/$CurrentUSER/Twine" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Twine"
   chown $CurrentUSER "/Users/$CurrentUSER/Twine"
@@ -401,15 +391,11 @@ LinkTwineFolders() {
     WriteToLogs "Twine subfolder already linked"
   fi
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 FixLibraryPerms() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   adjust_permissions() {
     local dir_path="$1"
@@ -433,15 +419,11 @@ FixLibraryPerms() {
     adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "700"
     adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "700"
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 CopyRoamingAppFiles() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
   local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
@@ -465,15 +447,11 @@ CopyRoamingAppFiles() {
   rsync -avz "/Users/$CurrentUSER/Documents/GarageBand/" "/Users/$CurrentUSER/Music/GarageBand/"  
   rsync -avz "/Users/$CurrentUSER/Documents/Sync/Twine/" "/Users/$CurrentUSER/Twine/"
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 SyncHomeLibraryToLocal() {
-  local start_time=$(date +%s)  # Capture start time in seconds
-  WriteToLogs "Started ${FUNCNAME[0]} function"
-  echo -n "/bottom_message ${FUNCNAME[0]}" >&3
+  StartFunctionLog
   
   if [ -f "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" ]; then
     WriteToLogs "Start sync from home for $CurrentUSER"
@@ -498,9 +476,7 @@ SyncHomeLibraryToLocal() {
     touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist"        
   fi
   
-  local end_time=$(date +%s)  # Capture end time in seconds
-  local duration=$((end_time - start_time))  # Calculate duration
-  WriteToLogs "### Finished ${FUNCNAME[0]} function in $duration seconds"
+  EndFunctionLog
 }
 
 OnExit() {
