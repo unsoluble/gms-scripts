@@ -64,7 +64,7 @@ CreateFolderAndSetPermissions() {
   local dir_path="$1"
   local owner="$2"
   
-  mkdir -p "$dir_path"
+  mkdir -p "$dir_path" || WriteToLogs "Failed to create directory $dir_path"
   chown "$owner" "$dir_path"
   chmod -R 700 "$dir_path"
 }
@@ -146,7 +146,7 @@ RedirectIfADAccount()  {
             WriteToLogs "$i available"
           else
             WriteToLogs "$i not available, creating..."
-            mkdir -p "$MYHOMEDIR/$i"
+            mkdir -p "$MYHOMEDIR/$i" || WriteToLogs "Failed to create directory $MYHOMEDIR/$i"
           fi
           
           WriteToLogs "Testing symlinks"
@@ -238,7 +238,7 @@ CreateHomeLibraryFolders()  {
     
     # First create the root Library folder
     if [ ! -d "$MYHOMEDIR/Library" ]; then
-      mkdir -p "$MYHOMEDIR/Library"
+      mkdir -p "$MYHOMEDIR/Library" || WriteToLogs "Failed to create directory $MYHOMEDIR/Library"
       chown $CurrentUSER "$MYHOMEDIR/Library"
     fi
     
@@ -324,8 +324,8 @@ LinkLibraryFolders() {
   echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
   # Symlink Minecraft folders to machine local shared
-  mkdir -p "/Users/Shared/minecraft"
-  mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft"
+  mkdir -p "/Users/Shared/minecraft" || WriteToLogs "Failed to create directory /Users/Shared/minecraft"
+  mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft"  || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Library/Application Support/minecraft"
   
   local mineFolders=(
     "assets"
@@ -337,7 +337,7 @@ LinkLibraryFolders() {
       WriteToLogs "Shared Minecraft ${mineFolders[m]} folder available"
     else
       WriteToLogs "Shared Minecraft ${mineFolders[m]} not available, creating..."
-      mkdir -p "/Users/Shared/minecraft/${mineFolders[m]}"
+      mkdir -p "/Users/Shared/minecraft/${mineFolders[m]}" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/${mineFolders[m]}"
     fi
     
     chown -R root:wheel "/Users/Shared/minecraft/${mineFolders[m]}"
@@ -365,7 +365,7 @@ LinkLibraryFolders() {
       WriteToLogs "$x already available"
     else
       WriteToLogs "$x not available, creating..."
-      mkdir -p "/Users/$CurrentUSER/Documents/Application Support/$x"
+      mkdir -p "/Users/$CurrentUSER/Documents/Application Support/$x" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Documents/Application Support/$x"
       chown $CurrentUSER "/Users/$CurrentUSER/Documents/Application Support/$x"
     fi
     
@@ -390,7 +390,7 @@ LinkTwineFolders() {
   WriteToLogs "Started ${FUNCNAME[0]} function"
   echo -n "/bottom_message ${FUNCNAME[0]}" >&3
   
-  mkdir -p "/Users/$CurrentUSER/Twine"
+  mkdir -p "/Users/$CurrentUSER/Twine" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Twine"
   chown $CurrentUSER "/Users/$CurrentUSER/Twine"
   
   if [ ! -L "/Users/$CurrentUSER/Documents/Twine" ]; then
