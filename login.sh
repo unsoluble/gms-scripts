@@ -573,7 +573,12 @@ display_progress() {
   rm -f "/tmp/${PIPE_NAME}"
   
   # Fully kill the Notifier UI.
-  kill -TERM "$Notifier_Process"
+  if [ -n "$Notifier_Process" ] && kill -0 "$Notifier_Process" 2>/dev/null; then
+      kill -TERM "$Notifier_Process"
+  else
+      WriteToLogs "No process found with ID $Notifier_Process"
+  fi
+
 }
 
 # Do the main sequence, wrapped by the progress UI.
