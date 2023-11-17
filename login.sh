@@ -489,7 +489,7 @@ OnExit() {
 
 # Wrap the sequence in a progress UI.
 display_progress() {
-  WriteToLogs "Login script started."
+  WriteToLogs "Login script started (v2023-11-17-1144)."
   WriteToLogs "Current User: $CurrentUSER"
   
   touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
