@@ -412,12 +412,12 @@ FixLibraryPerms() {
   
     adjust_permissions "/Applications/Minecraft.app" "777"
     adjust_permissions "/Users/Shared/minecraft/assets" "777" "root" "wheel"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "700"
-    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700"
+    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "700" "$CurrentUSER"
+    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
-    adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "700"
-    adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "700"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "700"
+    adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "700" "$CurrentUSER"
+    adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "700" "$CurrentUSER"
+    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "700" "$CurrentUSER"
   
   EndFunctionLog
 }
