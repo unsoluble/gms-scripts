@@ -165,13 +165,13 @@ RedirectIfADAccount()  {
           
           WriteToLogs "Testing symlinks"
           
-          if [ ! -L /Users/$CurrentUSER/$i ]; then
-            WriteToLogs "$i folder not linked, now linking"
-            chmod -R 777 /Users/$CurrentUSER/$i
-            rm -R /Users/$CurrentUSER/$i
-            ln -s "$MYHOMEDIR/$i" /Users/$CurrentUSER/
+          if [ ! -L "/Users/$CurrentUSER/$i" ] || [ "$(readlink "/Users/$CurrentUSER/$i")" != "$MYHOMEDIR/$i" ]; then
+            WriteToLogs "$i folder not correctly linked, now linking"
+            chmod -R 777 "/Users/$CurrentUSER/$i"
+            rm -R "/Users/$CurrentUSER/$i"
+            ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
           else
-            WriteToLogs "$i was already linked"
+            WriteToLogs "$i is already correctly linked to $MYHOMEDIR/$i"
           fi
         done
         
