@@ -338,7 +338,7 @@ LinkLibraryFolders() {
     chown -R root:wheel "/Users/Shared/minecraft/${mineFolders[m]}"
     chmod -R 777 "/Users/Shared/minecraft/${mineFolders[m]}"
     
-    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}" ]; then
+    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}" ] || [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}")" != "/Users/Shared/minecraft/${mineFolders[m]}" ]; then
       WriteToLogs "Minecraft ${mineFolders[m]} subfolder is not linked, now linking..."
       rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}"
       ln -s "/Users/Shared/minecraft/${mineFolders[m]}" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
@@ -366,7 +366,7 @@ LinkLibraryFolders() {
     
     WriteToLogs "Testing symlinks"
     
-    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/$x" ]; then
+    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/$x" ] || [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/$x")" != "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
       WriteToLogs "Application Support subfolder $x is not linked, now linking..."
       rm -Rf "/Users/$CurrentUSER/Library/Application Support/$x"
       ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/"
@@ -384,7 +384,7 @@ LinkTwineFolders() {
   mkdir -p "/Users/$CurrentUSER/Twine" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Twine"
   chown $CurrentUSER "/Users/$CurrentUSER/Twine"
   
-  if [ ! -L "/Users/$CurrentUSER/Documents/Twine" ]; then
+  if [ ! -L "/Users/$CurrentUSER/Documents/Twine" ] || [ "$(readlink "/Users/$CurrentUSER/Documents/Twine")" != "/Users/$CurrentUSER/Twine" ]; then
     WriteToLogs "Twine is not linked, now linking..."
     rm -Rf "/Users/$CurrentUSER/Documents/Twine"
     ln -s "/Users/$CurrentUSER/Twine" "/Users/$CurrentUSER/Documents/"
