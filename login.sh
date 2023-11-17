@@ -5,6 +5,7 @@
 ####################################################################################
 
 # Set global variables.
+SCRIPT_VERSION="2023-11-17-1218"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -489,7 +490,7 @@ OnExit() {
 
 # Wrap the sequence in a progress UI.
 display_progress() {
-  WriteToLogs "Login script started (v2023-11-17-1144)."
+  WriteToLogs "Login script started (script version $SCRIPT_VERSION)"
   WriteToLogs "Current User: $CurrentUSER"
   
   touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
