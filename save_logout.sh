@@ -4,6 +4,19 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
+# Set up the current user and their remote home path.
+CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
+
+if [ -d /Volumes/$CurrentUSER ]; then
+  MYHOMEDIR=/Volumes/$CurrentUSER
+fi
+
+if [ -d /Volumes/StudentHome\$ ]; then
+  MYHOMEDIR=/Volumes/StudentHome\$/$CurrentUSER
+else
+  MYHOMEDIR=/Volumes/Studenthome\$/$CurrentUSER
+fi
+
 # Set up sync sources and destinations.
 declare -A RSYNC_PAIRS
 
@@ -12,12 +25,14 @@ RSYNC_PAIRS=(
   ["${HOME}/Library/Application Support/minecraft/launcher_accounts.json"]="${HOME}/Documents/Application Support/minecraft/"
   ["${HOME}/Library/Application Support/minecraft/launcher_msa_credentials.bin"]="${HOME}/Documents/Application Support/minecraft/"
   ["${HOME}/Library/Application Support/minecraft/options.txt"]="${HOME}/Documents/Application Support/minecraft/"
+  ["${HOME}/Library/Preferences/"]="${MYHOMEDIR}/Library/Preferences/"
+  ["${HOME}/Library/Safari/"]="${MYHOMEDIR}/Library/Safari/"
+  ["${HOME}/Library/Saved Application State/"]="${MYHOMEDIR}/Library/Saved Application State/"
   ["${HOME}/Music/GarageBand/"]="${HOME}/Documents/GarageBand/"
   ["${HOME}/Twine/"]="${HOME}/Documents/Sync/Twine/"
 )
 
 # Set up a unique logfile for the current user.
-CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 RSYNC_LOG="/tmp/${CurrentUSER}_logout_log.txt"
 
 # Notifier UI paths.
