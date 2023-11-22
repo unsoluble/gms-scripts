@@ -20,7 +20,7 @@ for dir in /Users/*; do
 
   # Check if the directory was modified more than a month ago
   if [ $(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l) -gt 0 ]; then
-    WriteToLogs "Deleting local home directory for $username, not modified in the last $AGE_THRESHOLD days."
+    echo "Deleting local home directory for $username, not modified in the last $AGE_THRESHOLD days."
     rm -rf "$dir"
   fi
 done
