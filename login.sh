@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-11-17-1224"
+SCRIPT_VERSION="2023-11-22-1455"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
