@@ -252,10 +252,8 @@ CreateHomeLibraryFolders()  {
     # Set of Library folders to create
     local directories=(
       "Library/Preferences"
-      "Library/PreferencePanes"
       "Library/Safari"
       "Library/Saved Application State"
-      "Library/SyncedPreferences"
     )
     
     for dir in "${directories[@]}"; do
@@ -461,10 +459,8 @@ SyncHomeLibraryToLocal() {
     
     local libfolders=(
       "Preferences"
-      "PreferencePanes"
       "Saved Application State"
       "Safari"
-      "SyncedPreferences"
     )
     
     for (( n=0; n < ${#libfolders[@]}; n++ )); do
@@ -547,22 +543,11 @@ display_progress() {
     PinRedirectedFolders
   fi
     
-  # if [ "$ADUser" = "Student" ]; then
-  # OVERRIDE to do these functions for Staff as well:
-  if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
-    if [ ! -d "/Users/$CurrentUSER/Documents/Sync" ]; then 
-      CreateDocumentLibraryFolders
-    fi
-    
-    if [ ! -d "/Users/$CurrentUSER/Library/Application Support/Google/Chrome/Profile 1" ]; then 
-      PreStageUnlinkedAppFolders
-    fi
-    
-    LinkLibraryFolders
-    SyncHomeLibraryToLocal
-    LinkTwineFolders
-  fi
-  
+  CreateDocumentLibraryFolders
+  PreStageUnlinkedAppFolders
+  LinkLibraryFolders
+  SyncHomeLibraryToLocal
+  LinkTwineFolders
   FixLibraryPerms
   CopyRoamingAppFiles
   
@@ -579,7 +564,6 @@ display_progress() {
   else
       WriteToLogs "No process found with ID $Notifier_Process"
   fi
-
 }
 
 # Do the main sequence, wrapped by the progress UI.
