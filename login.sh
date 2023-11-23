@@ -534,7 +534,7 @@ display_progress() {
   CreateDocumentLibraryFolders
   PreStageUnlinkedAppFolders
   LinkLibraryFolders
-  SyncHomeLibraryToLocal
+  # SyncHomeLibraryToLocal
   LinkTwineFolders
   FixLibraryPerms
   CopyRoamingAppFiles
@@ -565,8 +565,8 @@ display_progress() {
 # Do the main sequence, wrapped by the progress UI.
 display_progress
 
-if [ "$ADUser" = "Student" ]; then
-  trap OnExit exit
-fi
+# if [ "$ADUser" = "Student" ]; then
+#   trap OnExit exit
+# fi
 
 exit 0
