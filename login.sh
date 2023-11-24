@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-11-23-1611"
+SCRIPT_VERSION="2023-11-24-1447"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -334,13 +334,9 @@ LinkLibraryFolders() {
     chown -R root:wheel "/Users/Shared/minecraft/$m"
     chmod -R 777 "/Users/Shared/minecraft/$m"
     
-    if [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/minecraft/$m")" != "/Users/Shared/minecraft/$m" ]; then
-      WriteToLogs "Minecraft $m subfolder is not linked, now linking..."
-      rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
-      ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
-    else
-      WriteToLogs "Minecraft $m subfolder already linked"
-    fi
+    WriteToLogs "Relinking Minecraft $m folder."
+    rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
+    ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
   done
   
   # Symlink Application Sub Folders
