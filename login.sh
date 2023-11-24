@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-11-23-1237"
+SCRIPT_VERSION="2023-11-23-1611"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -120,18 +120,16 @@ CheckADUserType() {
 # Pass "Student" or "Staff" to this.
 CheckFolderPath() {
   local userType="$1"
-
-  if [ -d /Volumes/$CurrentUSER ]; then
-    MYHOMEDIR=/Volumes/$CurrentUSER
-  fi
   
-  local homeDirUpper="/Volumes/${userType}Home\$/"
-  local homeDirLower="/Volumes/${userType}home\$/"
-
-  if [ -d "$homeDirUpper$CurrentUSER" ]; then 
-    MYHOMEDIR="${homeDirUpper}${CurrentUSER}"
+  # Check for actual SMB mount point
+  mountPoint=$(mount | grep $userType | grep "mounted by $CurrentUSER" | awk -F ' on ' '{print $2}' | awk '{print $1}')
+  
+  if [ -n "$mountPoint" ]; then
+    # Construct the full path to the user's home
+    MYHOMEDIR="$mountPoint/$CurrentUSER"
+    WriteToLogs "Remote home directory is $MYHOMEDIR"
   else
-    MYHOMEDIR="${homeDirLower}${CurrentUSER}"
+    WriteToLogs "Mount point for user $CurrentUSER not found"
   fi
 }
 
