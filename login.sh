@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-11-22-1455"
+SCRIPT_VERSION="2023-11-27-1510"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -165,16 +165,9 @@ RedirectIfADAccount()  {
             mkdir -p "$MYHOMEDIR/$i" || WriteToLogs "Failed to create directory $MYHOMEDIR/$i"
           fi
           
-          WriteToLogs "Testing symlinks"
-          
-          if [ ! -L "/Users/$CurrentUSER/$i" ] || [ "$(readlink "/Users/$CurrentUSER/$i")" != "$MYHOMEDIR/$i" ]; then
-            WriteToLogs "$i folder not correctly linked, now linking"
-            chmod -R 777 "/Users/$CurrentUSER/$i"
-            rm -R "/Users/$CurrentUSER/$i"
-            ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
-          else
-            WriteToLogs "$i is already correctly linked to $MYHOMEDIR/$i"
-          fi
+          WriteToLogs "Rebuilding symlink for $i"
+          rm -R "/Users/$CurrentUSER/$i"
+          ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
         done
         
         mounted=`expr $mounted - 1`
@@ -326,29 +319,22 @@ LinkLibraryFolders() {
     "versions"
   )
   
-  for (( m=0; m < ${#mineFolders[@]}; m++ )); do
-    if [ -d "/Users/Shared/minecraft/${mineFolders[m]}" ]; then
-      WriteToLogs "Shared Minecraft ${mineFolders[m]} folder available"
+  for m in "${mineFolders[@]}"; do
+    if [ -d "/Users/Shared/minecraft/$m" ]; then
+      WriteToLogs "Shared Minecraft $m folder available"
     else
-      WriteToLogs "Shared Minecraft ${mineFolders[m]} not available, creating..."
-      mkdir -p "/Users/Shared/minecraft/${mineFolders[m]}" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/${mineFolders[m]}"
+      WriteToLogs "Shared Minecraft $m not available, creating..."
+      mkdir -p "/Users/Shared/minecraft/$m" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/$m"
     fi
     
-    chown -R root:wheel "/Users/Shared/minecraft/${mineFolders[m]}"
-    chmod -R 777 "/Users/Shared/minecraft/${mineFolders[m]}"
+    chown -R root:wheel "/Users/Shared/minecraft/$m"
+    chmod -R 777 "/Users/Shared/minecraft/$m"
     
-    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}" ] || [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}")" != "/Users/Shared/minecraft/${mineFolders[m]}" ]; then
-      WriteToLogs "Minecraft ${mineFolders[m]} subfolder is not linked, now linking..."
-      rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}"
-      ln -s "/Users/Shared/minecraft/${mineFolders[m]}" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
-    else
-      WriteToLogs "Minecraft ${mineFolders[m]} subfolder already linked"
-    fi
+    WriteToLogs "Rebuilding Minecraft symlinks."
+    rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
+    ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
   done
-  
-  # Symlink Application Sub Folders
-  WriteToLogs "Creating Application Support subfolder symlinks"
-  
+    
   local appSubfolders=(
     "Dock"
     "iMovie"
@@ -363,15 +349,9 @@ LinkLibraryFolders() {
       chown $CurrentUSER "/Users/$CurrentUSER/Documents/Application Support/$x"
     fi
     
-    WriteToLogs "Testing symlinks"
-    
-    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/$x" ] || [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/$x")" != "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
-      WriteToLogs "Application Support subfolder $x is not linked, now linking..."
-      rm -Rf "/Users/$CurrentUSER/Library/Application Support/$x"
-      ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/"
-    else
-      WriteToLogs "$x subfolder already linked"
-    fi
+    WriteToLogs "Rebuilding Application Support symlinks."
+    rm -R "/Users/$CurrentUSER/Library/Application Support/$x"
+    ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/"
   done 
   
   EndFunctionLog
@@ -383,13 +363,9 @@ LinkTwineFolders() {
   mkdir -p "/Users/$CurrentUSER/Twine" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Twine"
   chown $CurrentUSER "/Users/$CurrentUSER/Twine"
   
-  if [ ! -L "/Users/$CurrentUSER/Documents/Twine" ] || [ "$(readlink "/Users/$CurrentUSER/Documents/Twine")" != "/Users/$CurrentUSER/Twine" ]; then
-    WriteToLogs "Twine is not linked, now linking..."
-    rm -Rf "/Users/$CurrentUSER/Documents/Twine"
-    ln -s "/Users/$CurrentUSER/Twine" "/Users/$CurrentUSER/Documents/"
-  else
-    WriteToLogs "Twine subfolder already linked"
-  fi
+  WriteToLogs "Rebuilding Twine symlink."
+  rm -R "/Users/$CurrentUSER/Documents/Twine"
+  ln -s "/Users/$CurrentUSER/Twine" "/Users/$CurrentUSER/Documents/"
   
   EndFunctionLog
 }
