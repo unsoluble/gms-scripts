@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-11-24-1447"
+SCRIPT_VERSION="2023-11-22-1455"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -118,18 +118,21 @@ CheckADUserType() {
 
 # Set the global $MYHOMEDIR variable based on the mounted home directory path.
 # Pass "Student" or "Staff" to this.
+
 CheckFolderPath() {
   local userType="$1"
+
+  if [ -d /Volumes/$CurrentUSER ]; then
+    MYHOMEDIR=/Volumes/$CurrentUSER
+  fi
   
-  # Check for actual SMB mount point
-  mountPoint=$(mount | grep $userType | grep "mounted by $CurrentUSER" | awk -F ' on ' '{print $2}' | awk '{print $1}')
-  
-  if [ -n "$mountPoint" ]; then
-    # Construct the full path to the user's home
-    MYHOMEDIR="$mountPoint/$CurrentUSER"
-    WriteToLogs "Remote home directory is $MYHOMEDIR"
+  local homeDirUpper="/Volumes/${userType}Home\$/"
+  local homeDirLower="/Volumes/${userType}home\$/"
+
+  if [ -d "$homeDirUpper$CurrentUSER" ]; then 
+    MYHOMEDIR="${homeDirUpper}${CurrentUSER}"
   else
-    WriteToLogs "Mount point for user $CurrentUSER not found"
+    MYHOMEDIR="${homeDirLower}${CurrentUSER}"
   fi
 }
 
@@ -164,7 +167,7 @@ RedirectIfADAccount()  {
           
           WriteToLogs "Testing symlinks"
           
-          if [ "$(readlink "/Users/$CurrentUSER/$i")" != "$MYHOMEDIR/$i" ]; then
+          if [ ! -L "/Users/$CurrentUSER/$i" ] || [ "$(readlink "/Users/$CurrentUSER/$i")" != "$MYHOMEDIR/$i" ]; then
             WriteToLogs "$i folder not correctly linked, now linking"
             chmod -R 777 "/Users/$CurrentUSER/$i"
             rm -R "/Users/$CurrentUSER/$i"
@@ -323,20 +326,24 @@ LinkLibraryFolders() {
     "versions"
   )
   
-  for m in "${mineFolders[@]}"; do
-    if [ -d "/Users/Shared/minecraft/$m" ]; then
-      WriteToLogs "Shared Minecraft $m folder available"
+  for (( m=0; m < ${#mineFolders[@]}; m++ )); do
+    if [ -d "/Users/Shared/minecraft/${mineFolders[m]}" ]; then
+      WriteToLogs "Shared Minecraft ${mineFolders[m]} folder available"
     else
-      WriteToLogs "Shared Minecraft $m not available, creating..."
-      mkdir -p "/Users/Shared/minecraft/$m" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/$m"
+      WriteToLogs "Shared Minecraft ${mineFolders[m]} not available, creating..."
+      mkdir -p "/Users/Shared/minecraft/${mineFolders[m]}" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/${mineFolders[m]}"
     fi
     
-    chown -R root:wheel "/Users/Shared/minecraft/$m"
-    chmod -R 777 "/Users/Shared/minecraft/$m"
+    chown -R root:wheel "/Users/Shared/minecraft/${mineFolders[m]}"
+    chmod -R 777 "/Users/Shared/minecraft/${mineFolders[m]}"
     
-    WriteToLogs "Relinking Minecraft $m folder."
-    rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
-    ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
+    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}" ] || [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}")" != "/Users/Shared/minecraft/${mineFolders[m]}" ]; then
+      WriteToLogs "Minecraft ${mineFolders[m]} subfolder is not linked, now linking..."
+      rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/${mineFolders[m]}"
+      ln -s "/Users/Shared/minecraft/${mineFolders[m]}" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
+    else
+      WriteToLogs "Minecraft ${mineFolders[m]} subfolder already linked"
+    fi
   done
   
   # Symlink Application Sub Folders
@@ -356,9 +363,11 @@ LinkLibraryFolders() {
       chown $CurrentUSER "/Users/$CurrentUSER/Documents/Application Support/$x"
     fi
     
-    if [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/$x")" != "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
+    WriteToLogs "Testing symlinks"
+    
+    if [ ! -L "/Users/$CurrentUSER/Library/Application Support/$x" ] || [ "$(readlink "/Users/$CurrentUSER/Library/Application Support/$x")" != "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
       WriteToLogs "Application Support subfolder $x is not linked, now linking..."
-      rm -R "/Users/$CurrentUSER/Library/Application Support/$x"
+      rm -Rf "/Users/$CurrentUSER/Library/Application Support/$x"
       ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/"
     else
       WriteToLogs "$x subfolder already linked"
@@ -374,7 +383,7 @@ LinkTwineFolders() {
   mkdir -p "/Users/$CurrentUSER/Twine" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Twine"
   chown $CurrentUSER "/Users/$CurrentUSER/Twine"
   
-  if [ "$(readlink "/Users/$CurrentUSER/Documents/Twine")" != "/Users/$CurrentUSER/Twine" ]; then
+  if [ ! -L "/Users/$CurrentUSER/Documents/Twine" ] || [ "$(readlink "/Users/$CurrentUSER/Documents/Twine")" != "/Users/$CurrentUSER/Twine" ]; then
     WriteToLogs "Twine is not linked, now linking..."
     rm -Rf "/Users/$CurrentUSER/Documents/Twine"
     ln -s "/Users/$CurrentUSER/Twine" "/Users/$CurrentUSER/Documents/"
@@ -402,6 +411,7 @@ FixLibraryPerms() {
   }
   
     adjust_permissions "/Applications/Minecraft.app" "777"
+    adjust_permissions "/Users/Shared/minecraft/assets" "777" "root" "wheel"
     adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
@@ -525,14 +535,7 @@ display_progress() {
   fi
   
   RedirectIfADAccount
-  CreateDocumentLibraryFolders
-  PreStageUnlinkedAppFolders
-  LinkLibraryFolders
-  # SyncHomeLibraryToLocal
-  LinkTwineFolders
-  FixLibraryPerms
-  CopyRoamingAppFiles
-  
+    
   # Pin redirected folders
   if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist" ]; then
     WriteToLogs "Redirected folders already pinned"
@@ -540,6 +543,14 @@ display_progress() {
     WriteToLogs "Pinning folders to sidebar"
     PinRedirectedFolders
   fi
+    
+  CreateDocumentLibraryFolders
+  PreStageUnlinkedAppFolders
+  LinkLibraryFolders
+  #SyncHomeLibraryToLocal
+  LinkTwineFolders
+  FixLibraryPerms
+  CopyRoamingAppFiles
   
   WriteToLogs "Login script complete."
   
@@ -559,8 +570,8 @@ display_progress() {
 # Do the main sequence, wrapped by the progress UI.
 display_progress
 
-# if [ "$ADUser" = "Student" ]; then
-#   trap OnExit exit
-# fi
+#if [ "$ADUser" = "Student" ]; then
+#  trap OnExit exit
+#fi
 
 exit 0
