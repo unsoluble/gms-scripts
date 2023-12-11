@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-12-11-1228"
+SCRIPT_VERSION="2023-12-11-1454"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -130,7 +130,7 @@ CheckADUserType() {
 
 CheckFolderPath() {
   local userType="$1"
-  local unescapedDir=$(mount | grep $1 | grep "mounted by ${CurrentUSER}" | grep -v "nobrowse" | awk -F ' on ' '{print $2}' | awk '{print $1}')
+  local unescapedDir=$(mount | grep -i $1 | grep "mounted by ${CurrentUSER}" | grep -v "nobrowse" | awk -F ' on ' '{print $2}' | awk '{print $1}')
   MYHOMEDIR="$(echo "$unescapedDir" | sed "s/\\$/\\\\$/")/$CurrentUSER"
   WriteToLogs "Detected mountpoint is $MYHOMEDIR"
 }
