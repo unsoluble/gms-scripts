@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-11-27-1510"
+SCRIPT_VERSION="2023-12-11-1149"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -82,7 +82,16 @@ CreateFolderAndSetPermissions() {
   local dir_path="$1"
   local owner="$2"
   
-  mkdir -p "$dir_path" || WriteToLogs "Failed to create directory $dir_path"
+  mkdir -p "$dir_path"
+  if [ $? -eq 0 ]; then
+    WriteToLogs "$dir_path created successfully"
+  else
+    if [ $? -eq 2 ]; then
+      WriteToLogs "Failed to create $dir_path due to insufficient permissions"
+    else
+      WriteToLogs "$dir_path already exists"
+    fi
+  fi
   chown "$owner" "$dir_path"
   chmod -R 700 "$dir_path"
 }
@@ -121,19 +130,9 @@ CheckADUserType() {
 
 CheckFolderPath() {
   local userType="$1"
-
-  if [ -d /Volumes/$CurrentUSER ]; then
-    MYHOMEDIR=/Volumes/$CurrentUSER
-  fi
-  
-  local homeDirUpper="/Volumes/${userType}Home\$/"
-  local homeDirLower="/Volumes/${userType}home\$/"
-
-  if [ -d "$homeDirUpper$CurrentUSER" ]; then 
-    MYHOMEDIR="${homeDirUpper}${CurrentUSER}"
-  else
-    MYHOMEDIR="${homeDirLower}${CurrentUSER}"
-  fi
+  local unescapedDir=$(mount | grep $1 | grep "mounted by ${CurrentUSER}" | grep -v "nobrowse" | awk -F ' on ' '{print $2}' | awk '{print $1}')
+  MYHOMEDIR="$(echo "$unescapedDir" | sed "s/\\$/\\\\$/")/$CurrentUSER"
+  WriteToLogs "Detected mountpoint is $MYHOMEDIR"
 }
 
 # Redirect folders in the local home directory to the remote home.
@@ -226,38 +225,17 @@ PinRedirectedFolders()  {
 CreateHomeLibraryFolders()  {
   StartFunctionLog
   
-  # If the SyncedPreferences folder exists, this creation routine should already be complete.
-  if [ -d "$MYHOMEDIR/Library/SyncedPreferences" ]; then
-    WriteToLogs "Library available"
-    
-    # Generate plists to indicate this process is complete
-    touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-    touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-  else
-    # This chmod seems excessive here; removing for now
-    # chmod -R 777 "$MYHOMEDIR"
-    
-    # First create the root Library folder
-    if [ ! -d "$MYHOMEDIR/Library" ]; then
-      mkdir -p "$MYHOMEDIR/Library" || WriteToLogs "Failed to create directory $MYHOMEDIR/Library"
-      chown $CurrentUSER "$MYHOMEDIR/Library"
-    fi
-    
-    # Set of Library folders to create
-    local directories=(
-      "Library/Preferences"
-      "Library/Safari"
-      "Library/Saved Application State"
-    )
-    
-    for dir in "${directories[@]}"; do
-      CreateFolderAndSetPermissions "$MYHOMEDIR/$dir" "$CurrentUSER"
-    done
-    
-    # Generate plists to indicate this process is complete
-    touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-    touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-  fi 
+  # Set of Library folders to create
+  local directories=(
+    "Library"
+    "Library/Preferences"
+    "Library/Safari"
+    "Library/Saved Application State"
+  )
+  
+  for dir in "${directories[@]}"; do
+    CreateFolderAndSetPermissions "$MYHOMEDIR/$dir" "$CurrentUSER"
+  done
   
   EndFunctionLog
 }
