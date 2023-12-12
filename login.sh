@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-12-11-1454"
+SCRIPT_VERSION="2023-12-12-1412"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -161,7 +161,16 @@ RedirectIfADAccount()  {
             WriteToLogs "$i available"
           else
             WriteToLogs "$i not available, creating..."
-            mkdir -p "$MYHOMEDIR/$i" || WriteToLogs "Failed to create directory $MYHOMEDIR/$i"
+            mkdir -p "$MYHOMEDIR/$i"
+            if [ $? -eq 0 ]; then
+              WriteToLogs "$MYHOMEDIR/$i created successfully"
+            else
+              if [ $? -eq 2 ]; then
+                WriteToLogs "Failed to create $MYHOMEDIR/$i due to insufficient permissions"
+              else
+                WriteToLogs "$MYHOMEDIR/$i already exists"
+              fi
+            fi
           fi
           
           WriteToLogs "Rebuilding symlink for $i"
