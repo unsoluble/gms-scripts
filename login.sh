@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-12-13-1152"
+SCRIPT_VERSION="2023-12-13-1304"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -171,7 +171,14 @@ RedirectIfADAccount()  {
         fi
         
         WriteToLogs "Rebuilding symlink for $i"
-        rm -R "/Users/$CurrentUSER/$i"
+        
+        if [ -L "/Users/$CurrentUSER/$i" ]; then
+          # If it's a symbolic link, delete the link only
+          rm "/Users/$CurrentUSER/$i"
+        elif [ -d "/Users/$CurrentUSER/$i" ]; then
+          # If it's a directory, recursively delete it and its contents
+          rm -r "/Users/$CurrentUSER/$i"
+        fi
         ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
       done
       
@@ -182,11 +189,6 @@ RedirectIfADAccount()  {
       sleep 5
     fi
   done
-  
-  # Generate a plist to indicate this process is complete.
-  touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
-  chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
-  chmod 777 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
   
   EndFunctionLog
 }
@@ -361,17 +363,18 @@ FixLibraryPerms() {
     local desired_perm="$2"
     local owner="$3"
     local group="$4"
-
-    if [ ! "$(stat -f '%A' "$dir_path")" = "$desired_perm" ]; then
-      [ -n "$owner" ] && chown -R "$owner:$group" "$dir_path"
-      chmod -R "$desired_perm" "$dir_path"
-      WriteToLogs "Set permissions for $dir_path"
+  
+    if [ -d "$dir_path" ]; then
+      [ -n "$owner" ] && chown -R "$owner:$group" "$dir_path" && WriteToLogs "Set ownership for $dir_path"
+      chmod -R "$desired_perm" "$dir_path" && WriteToLogs "Set permissions for $dir_path"
+    else
+      WriteToLogs "Directory $dir_path not found"
     fi
   }
   
     adjust_permissions "/Applications/Minecraft.app" "777"
     adjust_permissions "/Users/Shared/minecraft/assets" "777" "root" "wheel"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "700" "$CurrentUSER"
+    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "777"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "700" "$CurrentUSER"
