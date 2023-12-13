@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-12-12-1412"
+SCRIPT_VERSION="2023-12-13-1152"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -138,59 +138,55 @@ CheckFolderPath() {
 # Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount()  {
   StartFunctionLog
+  WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
   
-  # If the plist file already exists, this should already be complete, so is skipped.
-  if [ ! -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
-    WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
-    
-    local mounted=1
-    local folders=(
-      "Pictures"
-      "Documents"
-      "Downloads"
-      "Desktop"
-    )
-    
-    # This has a try/sleep cycle to ensure that the remote home directory has finished mounting.
-    while [ $mounted -gt 0 ]; do
-      if [ -d "$MYHOMEDIR" ]; then
-        WriteToLogs "$MYHOMEDIR exists"
-        
-        for i in "${folders[@]}"; do
-          if [ -d "$MYHOMEDIR/$i" ]; then
-            WriteToLogs "$i available"
+  local mounted=1
+  local folders=(
+    "Pictures"
+    "Documents"
+    "Downloads"
+    "Desktop"
+  )
+  
+  # This has a try/sleep cycle to ensure that the remote home directory has finished mounting.
+  while [ $mounted -gt 0 ]; do
+    if [ -d "$MYHOMEDIR" ]; then
+      WriteToLogs "$MYHOMEDIR exists"
+      
+      for i in "${folders[@]}"; do
+        if [ -d "$MYHOMEDIR/$i" ]; then
+          WriteToLogs "$i available"
+        else
+          WriteToLogs "$i not available, creating..."
+          mkdir -p "$MYHOMEDIR/$i"
+          if [ $? -eq 0 ]; then
+            WriteToLogs "$MYHOMEDIR/$i created successfully"
           else
-            WriteToLogs "$i not available, creating..."
-            mkdir -p "$MYHOMEDIR/$i"
-            if [ $? -eq 0 ]; then
-              WriteToLogs "$MYHOMEDIR/$i created successfully"
+            if [ $? -eq 2 ]; then
+              WriteToLogs "Failed to create $MYHOMEDIR/$i due to insufficient permissions"
             else
-              if [ $? -eq 2 ]; then
-                WriteToLogs "Failed to create $MYHOMEDIR/$i due to insufficient permissions"
-              else
-                WriteToLogs "$MYHOMEDIR/$i already exists"
-              fi
+              WriteToLogs "$MYHOMEDIR/$i already exists"
             fi
           fi
-          
-          WriteToLogs "Rebuilding symlink for $i"
-          rm -R "/Users/$CurrentUSER/$i"
-          ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
-        done
+        fi
         
-        mounted=`expr $mounted - 1`
-        
-      else
-        WriteToLogs "$MYHOMEDIR not available yet, waiting..."
-        sleep 5
-      fi
-    done
-    
-    # Generate a plist to indicate this process is complete.
-    touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
-    chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
-    chmod 777 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
-  fi
+        WriteToLogs "Rebuilding symlink for $i"
+        rm -R "/Users/$CurrentUSER/$i"
+        ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
+      done
+      
+      mounted=`expr $mounted - 1`
+      
+    else
+      WriteToLogs "$MYHOMEDIR not available yet, waiting..."
+      sleep 5
+    fi
+  done
+  
+  # Generate a plist to indicate this process is complete.
+  touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
+  chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
+  chmod 777 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist"
   
   EndFunctionLog
 }
