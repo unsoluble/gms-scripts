@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-12-13-1417"
+SCRIPT_VERSION="2023-12-19-1339"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -151,7 +151,7 @@ RedirectIfADAccount()  {
   # This has a try/sleep cycle to ensure that the remote home directory has finished mounting.
   while [ $mounted -gt 0 ]; do
     if [ -d "$MYHOMEDIR" ]; then
-      WriteToLogs "$MYHOMEDIR exists"
+      WriteToLogs "$MYHOMEDIR is mounted"
       
       for i in "${folders[@]}"; do
         if [ -d "$MYHOMEDIR/$i" ]; then
@@ -220,12 +220,7 @@ PinRedirectedFolders()  {
   
   # Pin new Sidebar folders
   add_mysides $uid "Desktop" "Downloads" "Documents" "Pictures" "Music" "Library"
-  
-  # Generate a plist to indicate this process is complete
-  touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
-  chown $CurrentUSER "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
-  chmod 755 "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist"
-  
+    
   EndFunctionLog
 }
 
@@ -497,15 +492,7 @@ display_progress() {
   fi
   
   RedirectIfADAccount
-    
-  # Pin redirected folders
-  if [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.PinFolders.plist" ]; then
-    WriteToLogs "Redirected folders already pinned"
-  elif [ -f "/Users/$CurrentUSER/Library/Application Support/com.gvsd.RedirectedFolders.plist" ]; then
-    WriteToLogs "Pinning folders to sidebar"
-    PinRedirectedFolders
-  fi
-    
+  PinRedirectedFolders
   CreateDocumentLibraryFolders
   PreStageUnlinkedAppFolders
   LinkLibraryFolders
