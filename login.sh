@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2023-12-19-1339"
+SCRIPT_VERSION="2024-02-08-1005"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -224,24 +224,6 @@ PinRedirectedFolders()  {
   EndFunctionLog
 }
 
-CreateHomeLibraryFolders()  {
-  StartFunctionLog
-  
-  # Set of Library folders to create
-  local directories=(
-    "Library"
-    "Library/Preferences"
-    "Library/Safari"
-    "Library/Saved Application State"
-  )
-  
-  for dir in "${directories[@]}"; do
-    CreateFolderAndSetPermissions "$MYHOMEDIR/$dir" "$CurrentUSER"
-  done
-  
-  EndFunctionLog
-}
-
 CreateDocumentLibraryFolders() {
   StartFunctionLog
   
@@ -407,32 +389,37 @@ CopyRoamingAppFiles() {
   EndFunctionLog
 }
 
-SyncHomeLibraryToLocal() {
+DeleteOldLocalHomes() {
   StartFunctionLog
   
-  if [ -f "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" ]; then
-    WriteToLogs "Start sync from home for $CurrentUSER"
-    
-    rm -f "$MYHOMEDIR/Library/Preferences/com.apple.dock.plist" 
-    
-    local libfolders=(
-      "Preferences"
-      "Saved Application State"
-      "Safari"
-    )
-    
-    for (( n=0; n < ${#libfolders[@]}; n++ )); do
-      chown -R $CurrentUSER "/Users/$CurrentUSER/Library/${libfolders[n]}"
-      rsync -avz --exclude=".*" "$MYHOMEDIR/Library/${libfolders[n]}/" "/Users/$CurrentUSER/Library/${libfolders[n]}/"
-      WriteToLogs "rsync code for ${libfolders[n]} from home is $?"
-    done
-    
-    touch "$MYHOMEDIR/Library/Preferences/com.gvsd.HomeLibraryExists.plist" 
-    touch "/Users/$CurrentUSER/Library/Preferences/com.gvsd.HomeLibraryExists.plist"        
-  fi
+  # Define the age threshold (in days)
+  AGE_THRESHOLD=30
+  
+  # Loop through each directory in /Users
+  for dir in /Users/*; do
+    # Skip if it's not a directory
+    [ -d "$dir" ] || continue
+  
+    # Extract username from directory path
+    username=$(basename "$dir")
+  
+    # Skip certain accounts
+    case "$username" in
+      "Shared"|".localized"|"admin"|"helpdesk")
+        continue
+        ;;
+    esac
+  
+    # Delete if the directory was modified more than the threshold ago
+    if [ $(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l) -gt 0 ]; then
+      WriteToLogs "Deleting local home for $username, not modified in last $AGE_THRESHOLD days."
+      rm -rf "$dir"
+    fi
+  done
   
   EndFunctionLog
 }
+
 
 OnExit() {
   jamf policy -event synctohome
@@ -496,10 +483,10 @@ display_progress() {
   CreateDocumentLibraryFolders
   PreStageUnlinkedAppFolders
   LinkLibraryFolders
-  #SyncHomeLibraryToLocal
   LinkTwineFolders
   FixLibraryPerms
   CopyRoamingAppFiles
+  DeleteOldLocalHomes
   
   WriteToLogs "Login script complete."
   
