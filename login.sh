@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2024-02-08-1005"
+SCRIPT_VERSION="2024-02-28-1332"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -177,7 +177,7 @@ RedirectIfADAccount()  {
           rm "/Users/$CurrentUSER/$i"
         elif [ -d "/Users/$CurrentUSER/$i" ]; then
           # If it's a directory, recursively delete it and its contents
-          rm -r "/Users/$CurrentUSER/$i"
+          rm -r -P "/Users/$CurrentUSER/$i"
         fi
         ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
       done

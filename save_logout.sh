@@ -4,6 +4,8 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
+SCRIPT_VERSION="2024-02-08-1005"
+
 # Set up sync sources and destinations.
 declare -A RSYNC_PAIRS
 
