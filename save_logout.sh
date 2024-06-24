@@ -4,13 +4,14 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
-SCRIPT_VERSION="2024-02-08-1005"
+SCRIPT_VERSION="2024-06-24-1358"
 
 # Set up sync sources and destinations.
 declare -A RSYNC_PAIRS
 
 RSYNC_PAIRS=(
   ["${HOME}/Library/Application Support/minecraft/saves/"]="${HOME}/Documents/Application Support/minecraft/saves/"
+  ["${HOME}/Library/Application Support/minecraft/curseforge/"]="${HOME}/Documents/Application Support/minecraft/curseforge/"
   ["${HOME}/Library/Application Support/minecraft/launcher_accounts.json"]="${HOME}/Documents/Application Support/minecraft/"
   ["${HOME}/Library/Application Support/minecraft/launcher_msa_credentials.bin"]="${HOME}/Documents/Application Support/minecraft/"
   ["${HOME}/Library/Application Support/minecraft/options.txt"]="${HOME}/Documents/Application Support/minecraft/"
