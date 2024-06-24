@@ -350,7 +350,7 @@ FixLibraryPerms() {
   }
   
     adjust_permissions "/Applications/Minecraft.app" "777"
-    adjust_permissions "/Users/Shared/minecraft/assets" "777" "root" "wheel"
+    adjust_permissions "/Users/Shared/minecraft" "777" "root" "wheel"
     adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "777"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
@@ -370,6 +370,9 @@ CopyRoamingAppFiles() {
   # Sync the Minecraft saves directory
   rsync -avz "$srcBase/saves/" "$destBase/saves/"
   
+  # Sync the Minecraft curseforge directory
+  rsync -avz "$srcBase/curseforge/" "$destBase/curseforge/"
+  
   # Sync individual Minecraft settings files
   local files=(
     "launcher_accounts.json"
@@ -379,8 +382,6 @@ CopyRoamingAppFiles() {
   for file in "${files[@]}"; do
     rsync -avz "$srcBase/$file" "$destBase/"
   done
-    
-  chmod -R 777 "/Users/Shared/minecraft"
   
   # Sync GarageBand and Twine folders
   rsync -avz "/Users/$CurrentUSER/Documents/GarageBand/" "/Users/$CurrentUSER/Music/GarageBand/"  
@@ -419,7 +420,6 @@ DeleteOldLocalHomes() {
   
   EndFunctionLog
 }
-
 
 OnExit() {
   jamf policy -event synctohome
@@ -468,8 +468,6 @@ display_progress() {
     
   WriteToLogs "Home Folder is $MYHOMEDIR"
   
-  # if [ "$ADUser" = "Student" ]; then
-  # OVERRIDE to do these functions for Staff as well:
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
     if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
       CreateHomeLibraryFolders
@@ -486,7 +484,6 @@ display_progress() {
   LinkTwineFolders
   FixLibraryPerms
   CopyRoamingAppFiles
-  DeleteOldLocalHomes
   
   WriteToLogs "Login script complete."
   
@@ -504,10 +501,8 @@ display_progress() {
 }
 
 # Do the main sequence, wrapped by the progress UI.
+# Delete the stale local homes after the UI has closed, as we don't need to watch it.
 display_progress
-
-#if [ "$ADUser" = "Student" ]; then
-#  trap OnExit exit
-#fi
+DeleteOldLocalHomes
 
 exit 0
