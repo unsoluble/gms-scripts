@@ -392,32 +392,38 @@ CopyRoamingAppFiles() {
 
 DeleteOldLocalHomes() {
   StartFunctionLog
-  
+
   # Define the age threshold (in days)
   AGE_THRESHOLD=30
-  
+
   # Loop through each directory in /Users
   for dir in /Users/*; do
-    # Skip if it's not a directory
-    [ -d "$dir" ] || continue
-  
+    # Skip if it's not a regular directory or is a symlink
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+
     # Extract username from directory path
     username=$(basename "$dir")
-  
+
     # Skip certain accounts
     case "$username" in
       "Shared"|".localized"|"admin"|"helpdesk")
         continue
         ;;
     esac
-  
-    # Delete if the directory was modified more than the threshold ago
-    if [ $(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l) -gt 0 ]; then
+
+    # Verify the directory is safe for deletion and was modified long ago
+    if [[ "$dir" == /Users/* ]] && [ -n "$dir" ] && [ "$(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
       WriteToLogs "Deleting local home for $username, not modified in last $AGE_THRESHOLD days."
-      rm -rf "$dir"
+      
+      # Attempt deletion and log success or failure
+      if rm -rf "$dir"; then
+        WriteToLogs "Successfully deleted $dir."
+      else
+        WriteToLogs "Error deleting $dir."
+      fi
     fi
   done
-  
+
   EndFunctionLog
 }
 
