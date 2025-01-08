@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2024-12-19-1003"
+SCRIPT_VERSION="2025-01-08-1407"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 
@@ -136,60 +136,68 @@ CheckFolderPath() {
 }
 
 # Redirect folders in the local home directory to the remote home.
-RedirectIfADAccount()  {
+RedirectIfADAccount() {
   StartFunctionLog
   WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
   
   local mounted=1
+  local retries=12  # Max retries for mount check
   local folders=(
     "Pictures"
     "Documents"
     "Downloads"
     "Desktop"
   )
-  
-  # This has a try/sleep cycle to ensure that the remote home directory has finished mounting.
+
+  # Retry loop for ensuring the remote home directory is mounted
   while [ $mounted -gt 0 ]; do
     if [ -d "$MYHOMEDIR" ]; then
       WriteToLogs "$MYHOMEDIR is mounted"
+      mounted=0
       
       for i in "${folders[@]}"; do
+        # Ensure the folder exists in the remote directory
         if [ -d "$MYHOMEDIR/$i" ]; then
           WriteToLogs "$i available"
         else
           WriteToLogs "$i not available, creating..."
           mkdir -p "$MYHOMEDIR/$i"
-          if [ $? -eq 0 ]; then
+          local status=$?
+          if [ $status -eq 0 ]; then
             WriteToLogs "$MYHOMEDIR/$i created successfully"
+          elif [ $status -eq 2 ]; then
+            WriteToLogs "Failed to create $MYHOMEDIR/$i due to insufficient permissions"
           else
-            if [ $? -eq 2 ]; then
-              WriteToLogs "Failed to create $MYHOMEDIR/$i due to insufficient permissions"
-            else
-              WriteToLogs "$MYHOMEDIR/$i already exists"
-            fi
+            WriteToLogs "$MYHOMEDIR/$i already exists"
           fi
         fi
-        
+
+        # Handle existing symlinks or directories
         WriteToLogs "Rebuilding symlink for $i"
-        
         if [ -L "/Users/$CurrentUSER/$i" ]; then
-          # If it's a symbolic link, delete the link only
           rm "/Users/$CurrentUSER/$i"
         elif [ -d "/Users/$CurrentUSER/$i" ]; then
-          # If it's a directory, recursively delete it and its contents
-          rm -r -P "/Users/$CurrentUSER/$i"
+          rm -r "/Users/$CurrentUSER/$i"
+        elif [ -e "/Users/$CurrentUSER/$i" ]; then
+          rm "/Users/$CurrentUSER/$i"
         fi
-        ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/"
+
+        # Create new symlink
+        ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/$i"
       done
-      
-      mounted=`expr $mounted - 1`
-      
+
     else
       WriteToLogs "$MYHOMEDIR not available yet, waiting..."
       sleep 5
+      retries=$((retries - 1))
+      if [ $retries -le 0 ]; then
+        WriteToLogs "Failed to detect $MYHOMEDIR after multiple retries. Exiting."
+        EndFunctionLog
+        return 1
+      fi
     fi
   done
-  
+
   EndFunctionLog
 }
 
@@ -272,52 +280,57 @@ PreStageUnlinkedAppFolders() {
 LinkLibraryFolders() {
   StartFunctionLog
   
-  # Symlink Minecraft folders to machine local shared
+  # Ensure shared Minecraft directory exists
   mkdir -p "/Users/Shared/minecraft" || WriteToLogs "Failed to create directory /Users/Shared/minecraft"
-  mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft"  || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Library/Application Support/minecraft"
+  mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Library/Application Support/minecraft"
   
-  local mineFolders=(
-    "assets"
-    "versions"
-  )
+  local mineFolders=("assets" "versions")
   
   for m in "${mineFolders[@]}"; do
-    if [ -d "/Users/Shared/minecraft/$m" ]; then
-      WriteToLogs "Shared Minecraft $m folder available"
-    else
+    if [ ! -d "/Users/Shared/minecraft/$m" ]; then
       WriteToLogs "Shared Minecraft $m not available, creating..."
       mkdir -p "/Users/Shared/minecraft/$m" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/$m"
+    else
+      WriteToLogs "Shared Minecraft $m folder available"
     fi
     
-    chown -R root:wheel "/Users/Shared/minecraft/$m"
+    chown -R root:staff "/Users/Shared/minecraft/$m"
     chmod -R 777 "/Users/Shared/minecraft/$m"
     
-    WriteToLogs "Rebuilding Minecraft symlinks."
-    rm -R "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
-    ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/"
+    # Safely rebuild symlink
+    WriteToLogs "Rebuilding Minecraft symlink for $m"
+    if [ -L "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" ]; then
+      rm "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
+    elif [ -d "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" ]; then
+      rm -r "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
+    fi
+    ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" || WriteToLogs "Failed to create symlink for $m"
   done
-    
-  local appSubfolders=(
-    "Dock"
-    "iMovie"
-  )
+  
+  local appSubfolders=("Dock" "iMovie")
   
   for x in "${appSubfolders[@]}"; do
-    if [ -d "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
-      WriteToLogs "$x already available"
-    else
+    if [ ! -d "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
       WriteToLogs "$x not available, creating..."
       mkdir -p "/Users/$CurrentUSER/Documents/Application Support/$x" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Documents/Application Support/$x"
-      chown $CurrentUSER "/Users/$CurrentUSER/Documents/Application Support/$x"
+      chown "$CurrentUSER" "/Users/$CurrentUSER/Documents/Application Support/$x"
+    else
+      WriteToLogs "$x already available"
     fi
     
-    WriteToLogs "Rebuilding Application Support symlinks."
-    rm -R "/Users/$CurrentUSER/Library/Application Support/$x"
-    ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/"
-  done 
+    # Safely rebuild symlink
+    WriteToLogs "Rebuilding Application Support symlink for $x"
+    if [ -L "/Users/$CurrentUSER/Library/Application Support/$x" ]; then
+      rm "/Users/$CurrentUSER/Library/Application Support/$x"
+    elif [ -d "/Users/$CurrentUSER/Library/Application Support/$x" ]; then
+      rm -r "/Users/$CurrentUSER/Library/Application Support/$x"
+    fi
+    ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/$x" || WriteToLogs "Failed to create symlink for $x"
+  done
   
   EndFunctionLog
 }
+
 
 LinkTwineFolders() {
   StartFunctionLog
@@ -363,41 +376,72 @@ FixLibraryPerms() {
 
 CopyRoamingAppFiles() {
   StartFunctionLog
-  
+
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
   local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
-  
-  # Sync the Minecraft saves directory
-  rsync -avz "$srcBase/saves/" "$destBase/saves/"
-  
-  # Sync the Minecraft curseforge directory
-  rsync -avz "$srcBase/curseforge/" "$destBase/curseforge/"
-  
-  # Sync individual Minecraft settings files
-  local files=(
-    "launcher_accounts.json"
-    "launcher_msa_credentials.bin"
-    "options.txt"
-  )
+  local status=0
+
+  # Function to sync directories with checks
+  sync_directory() {
+    local src=$1
+    local dest=$2
+    local name=$3
+
+    if [ -d "$src" ]; then
+      rsync -avz "$src/" "$dest/"
+      status=$?
+      if [ $status -eq 0 ]; then
+        WriteToLogs "Successfully synced $name from $src to $dest."
+      else
+        WriteToLogs "Error syncing $name from $src to $dest."
+      fi
+    else
+      WriteToLogs "Source directory $src for $name does not exist. Skipping."
+    fi
+  }
+
+  # Sync Minecraft directories
+  sync_directory "$srcBase/saves" "$destBase/saves" "Minecraft saves"
+  sync_directory "$srcBase/curseforge" "$destBase/curseforge" "Minecraft curseforge"
+
+  # Sync individual Minecraft files
+  local files=("launcher_accounts.json" "launcher_msa_credentials.bin" "options.txt")
   for file in "${files[@]}"; do
-    rsync -avz "$srcBase/$file" "$destBase/"
+    if [ -e "$srcBase/$file" ]; then
+      rsync -avz "$srcBase/$file" "$destBase/"
+      if [ $? -eq 0 ]; then
+        WriteToLogs "Successfully synced $file from $srcBase to $destBase."
+      else
+        WriteToLogs "Error syncing $file from $srcBase to $destBase."
+      fi
+    else
+      WriteToLogs "File $srcBase/$file does not exist. Skipping."
+    fi
   done
-  
+
   # Sync GarageBand and Twine folders
-  rsync -avz "/Users/$CurrentUSER/Documents/GarageBand/" "/Users/$CurrentUSER/Music/GarageBand/"  
-  rsync -avz "/Users/$CurrentUSER/Documents/Sync/Twine/" "/Users/$CurrentUSER/Twine/"
-  
+  sync_directory "/Users/$CurrentUSER/Documents/GarageBand" "/Users/$CurrentUSER/Music/GarageBand" "GarageBand"
+  sync_directory "/Users/$CurrentUSER/Documents/Sync/Twine" "/Users/$CurrentUSER/Twine" "Twine"
+
   EndFunctionLog
 }
 
+
 DeleteOldLocalHomes() {
+  # This function frees up space on the client, by deleting the *local* home directory for any user who hasn't
+  # logged into this client for over 30 days. It does not touch any files in the users' actual home directories
+  # on the AD StudentHome$ volume.
+  
   StartFunctionLog
 
   # Define the age threshold (in days)
   AGE_THRESHOLD=30
+  
+  # Ensure the base directory is strictly /Users
+  BASE_DIR="/Users"
 
   # Loop through each directory in /Users
-  for dir in /Users/*; do
+  for dir in "$BASE_DIR"/*; do
     # Skip if it's not a regular directory or is a symlink
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
 
@@ -412,8 +456,8 @@ DeleteOldLocalHomes() {
     esac
 
     # Verify the directory is safe for deletion and was modified long ago
-    if [[ "$dir" == /Users/* ]] && [ -n "$dir" ] && [ "$(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
-      WriteToLogs "Deleting local home for $username, not modified in last $AGE_THRESHOLD days."
+    if [[ "$(realpath "$dir")" == "$BASE_DIR"/* ]] && [ "$(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
+    WriteToLogs "Deleting local home for $username, not modified in last $AGE_THRESHOLD days."
       
       # Attempt deletion and log success or failure
       if rm -rf "$dir"; then
@@ -421,6 +465,8 @@ DeleteOldLocalHomes() {
       else
         WriteToLogs "Error deleting $dir."
       fi
+    else
+      WriteToLogs "Skipping $dir. Either recently modified or not valid."
     fi
   done
 
