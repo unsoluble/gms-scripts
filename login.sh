@@ -5,9 +5,11 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-01-08-1407"
+SCRIPT_VERSION="2025-05-09-1057"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
+# Age threshold for local home deletion
+AGE_THRESHOLD=15
 
 # Notifier UI paths.
 APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
@@ -429,13 +431,10 @@ CopyRoamingAppFiles() {
 
 DeleteOldLocalHomes() {
   # This function frees up space on the client, by deleting the *local* home directory for any user who hasn't
-  # logged into this client for over 30 days. It does not touch any files in the users' actual home directories
-  # on the AD StudentHome$ volume.
+  # logged into this client for a number of days set by AGE_THRESHOLD. It does not touch any files in the users'
+  # actual home directories on the AD StudentHome$ volume.
   
   StartFunctionLog
-
-  # Define the age threshold (in days)
-  AGE_THRESHOLD=30
   
   # Ensure the base directory is strictly /Users
   BASE_DIR="/Users"
