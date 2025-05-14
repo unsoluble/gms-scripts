@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-05-09-1057"
+SCRIPT_VERSION="2025-05-14-0934"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 # Age threshold for local home deletion
@@ -430,40 +430,62 @@ CopyRoamingAppFiles() {
 
 
 DeleteOldLocalHomes() {
-  # This function frees up space on the client, by deleting the *local* home directory for any user who hasn't
-  # logged into this client for a number of days set by AGE_THRESHOLD. It does not touch any files in the users'
-  # actual home directories on the AD StudentHome$ volume.
-  
-  StartFunctionLog
-  
-  # Ensure the base directory is strictly /Users
-  BASE_DIR="/Users"
+  # This function frees up space on the client by deleting selected large folders
+  # in users' local home directories that haven't been modified in AGE_THRESHOLD days.
+  # It does not touch files in the users' actual home directories on the network share.
 
-  # Loop through each directory in /Users
+  StartFunctionLog
+
+  BASE_DIR="/Users"
+  SIZE_THRESHOLD_KB=512000  # 500MB in kb
+
   for dir in "$BASE_DIR"/*; do
-    # Skip if it's not a regular directory or is a symlink
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
 
-    # Extract username from directory path
     username=$(basename "$dir")
 
-    # Skip certain accounts
     case "$username" in
-      "Shared"|".localized"|"admin"|"helpdesk")
+      "Shared"|".localized"|"admin")
         continue
         ;;
     esac
 
-    # Verify the directory is safe for deletion and was modified long ago
     if [[ "$(realpath "$dir")" == "$BASE_DIR"/* ]] && [ "$(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
-    WriteToLogs "Deleting local home for $username, not modified in last $AGE_THRESHOLD days."
-      
-      # Attempt deletion and log success or failure
-      if rm -rf "$dir"; then
-        WriteToLogs "Successfully deleted $dir."
-      else
-        WriteToLogs "Error deleting $dir."
+      WriteToLogs "Cleaning up selected folders in $username's local home."
+
+      # Paths to delete inside the user's home
+      folders_to_delete=(
+        "$dir/Library/Application Support/minecraft/saves"
+        "$dir/Music/GarageBand"
+      )
+
+      for target in "${folders_to_delete[@]}"; do
+        if [ -d "$target" ]; then
+          if rm -rf "$target"; then
+            WriteToLogs "Deleted $target."
+          else
+            WriteToLogs "Error deleting $target."
+          fi
+        else
+          WriteToLogs "Skipped $target (not found)."
+        fi
+      done
+
+      # Also delete folders in ~/Library over 500MB
+      LIBRARY_DIR="$dir/Library"
+      if [ -d "$LIBRARY_DIR" ]; then
+        find "$LIBRARY_DIR" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
+          folder_size_kb=$(du -sk "$subdir" | awk '{print $1}')
+          if [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
+            if rm -rf "$subdir"; then
+              WriteToLogs "Deleted large folder $subdir (${folder_size_kb}KB)."
+            else
+              WriteToLogs "Error deleting large folder $subdir."
+            fi
+          fi
+        done
       fi
+
     else
       WriteToLogs "Skipping $dir. Either recently modified or not valid."
     fi
