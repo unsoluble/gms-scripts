@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-05-14-0934"
+SCRIPT_VERSION="2025-05-26-1021"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 # Age threshold for local home deletion
