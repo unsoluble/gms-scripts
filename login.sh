@@ -461,10 +461,11 @@ DeleteOldLocalHomes() {
 
       for target in "${folders_to_delete[@]}"; do
         if [ -d "$target" ]; then
-          if rm -rf "$target"; then
+          rm_output=$(rm -rf "$target" 2>&1)
+          if [ $? -eq 0 ]; then
             WriteToLogs "Deleted $target."
           else
-            WriteToLogs "Error deleting $target."
+            WriteToLogs "Error deleting $target: $rm_output"
           fi
         else
           WriteToLogs "Skipped $target (not found)."
