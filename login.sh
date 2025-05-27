@@ -57,7 +57,7 @@ WriteToLogs() {
 # Log the start of a function, and capture the time for its duration.
 StartFunctionLog() {
   FUNC_START_TIME=$(date +%s)
-  WriteToLogs "Started ${FUNCNAME[1]} function" # FUNCNAME[1] is the name of the calling function
+  WriteToLogs "### Started ${FUNCNAME[1]} function" # FUNCNAME[1] is the name of the calling function
   echo -n "/bottom_message Starting ${FUNCNAME[1]}..." >&3
 }
 
@@ -68,34 +68,55 @@ EndFunctionLog() {
   WriteToLogs "### Finished ${FUNCNAME[1]} function in $duration seconds"
 }
 
-# Runs a command as the currently logged-in user.
-RunAsUser() {  
-  if [ "$CurrentUSER" != "loginwindow" ]; then
-    launchctl asuser "$(id -u "$CurrentUSER")" sudo -u "$CurrentUSER" "$@"
-  else
-    WriteToLogs "No user logged in." >&2
-    return 1
-  fi
-}
-
 # Batch folder creation and permission setting.
 # Pass a directory and a userID to this.
 CreateFolderAndSetPermissions() {
   local dir_path="$1"
   local owner="$2"
-  
-  mkdir -p "$dir_path"
-  if [ $? -eq 0 ]; then
-    WriteToLogs "$dir_path created successfully"
-  else
-    if [ $? -eq 2 ]; then
-      WriteToLogs "Failed to create $dir_path due to insufficient permissions"
+
+  # Validate inputs
+  if [ -z "$dir_path" ] || [ -z "$owner" ]; then
+    WriteToLogs "Error: Missing parameters to CreateFolderAndSetPermissions"
+    return 1
+  fi
+
+  # Check if the directory exists
+  if [ -d "$dir_path" ]; then
+    # Get current owner and permissions
+    current_owner=$(stat -f "%Su" "$dir_path")
+    current_perms=$(stat -f "%Lp" "$dir_path")
+
+    if [[ "$current_owner" == "$owner" && "$current_perms" == "700" ]]; then
+      WriteToLogs "Directory $dir_path already exists with correct owner and permissions — skipping."
+      return 0
     else
-      WriteToLogs "$dir_path already exists"
+      WriteToLogs "Directory $dir_path exists but needs ownership or permission correction."
+    fi
+  else
+    # Try to create the directory
+    if mkdir -p "$dir_path"; then
+      WriteToLogs "Created directory: $dir_path"
+    else
+      WriteToLogs "Error: Failed to create directory $dir_path"
+      return 1
     fi
   fi
-  chown "$owner" "$dir_path"
-  chmod -R 700 "$dir_path"
+
+  # Set ownership
+  if chown "$owner" "$dir_path"; then
+    WriteToLogs "Set ownership of $dir_path to $owner"
+  else
+    WriteToLogs "Error: Failed to set ownership of $dir_path to $owner"
+    return 1
+  fi
+
+  # Set permissions
+  if chmod 700 "$dir_path"; then
+    WriteToLogs "Set permissions on $dir_path to 700"
+  else
+    WriteToLogs "Error: Failed to set permissions on $dir_path"
+    return 1
+  fi
 }
 
 # Check if the current user is an AD account.
@@ -105,10 +126,10 @@ CheckIfADAccount() {
   local accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
 
   if [ "$accountCheck" != "" ]; then
-    WriteToLogs "User $loggedInUser is an AD account"
+    WriteToLogs "$loggedInUser is an AD account"
     AD=1
   else
-    WriteToLogs "User $loggedInUser is a local account"
+    WriteToLogs "$loggedInUser is a local account"
     AD=0
   fi
 }
@@ -119,10 +140,10 @@ CheckADUserType() {
   local accountCheck=$(dscl . read /Users/$CurrentUSER OriginalAuthenticationAuthority 2>/dev/null)
   
   if [ "$accountCheck" != "" ] && [[ $CurrentUSER =~ ^[0-9] ]]; then
-    WriteToLogs "User $CurrentUSER is a student account"
+    WriteToLogs "$CurrentUSER is a student account"
     ADUser='Student'
   else
-    WriteToLogs "User $CurrentUSER is a staff account"
+    WriteToLogs "$CurrentUSER is a staff account"
     ADUser='Staff'
   fi
 }
@@ -249,19 +270,6 @@ CreateDocumentLibraryFolders() {
     "Documents/Sync/Twine/Stories"
     "Documents/Sync/Twine/Backups"
     "Twine"
-  )
-  
-  for dir in "${directories[@]}"; do
-    CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
-  done
-
-  EndFunctionLog
-}
-
-PreStageUnlinkedAppFolders() {
-  StartFunctionLog
-  
-  local directories=(
     "Library/Application Support"
     "Library/Application Support/minecraft"
     "Library/Application Support/minecraft/saves"
@@ -275,7 +283,7 @@ PreStageUnlinkedAppFolders() {
   for dir in "${directories[@]}"; do
     CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
   done
-  
+
   EndFunctionLog
 }
 
@@ -336,14 +344,52 @@ LinkLibraryFolders() {
 
 LinkTwineFolders() {
   StartFunctionLog
-  
-  mkdir -p "/Users/$CurrentUSER/Twine" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Twine"
-  chown $CurrentUSER "/Users/$CurrentUSER/Twine"
-  
-  WriteToLogs "Rebuilding Twine symlink."
-  rm -R "/Users/$CurrentUSER/Documents/Twine"
-  ln -s "/Users/$CurrentUSER/Twine" "/Users/$CurrentUSER/Documents/"
-  
+
+  local twine_target="/Users/$CurrentUSER/Twine"
+  local twine_link="/Users/$CurrentUSER/Documents/Twine"
+
+  # Ensure target exists
+  if mkdir -p "$twine_target"; then
+    WriteToLogs "Ensured directory exists: $twine_target"
+  else
+    WriteToLogs "Error: Failed to create directory $twine_target"
+    EndFunctionLog
+    return 1
+  fi
+
+  # Set ownership
+  if chown "$CurrentUSER" "$twine_target"; then
+    WriteToLogs "Set ownership of $twine_target to $CurrentUSER"
+  else
+    WriteToLogs "Warning: Failed to set ownership of $twine_target"
+  fi
+
+  # Check if link already exists and is correct
+  if [ -L "$twine_link" ]; then
+    current_target=$(readlink "$twine_link")
+    if [ "$current_target" = "$twine_target" ]; then
+      WriteToLogs "Symlink already in place: $twine_link → $twine_target"
+      EndFunctionLog
+      return 0
+    else
+      WriteToLogs "Removing incorrect symlink: $twine_link → $current_target"
+      rm "$twine_link"
+    fi
+  elif [ -e "$twine_link" ]; then
+    # Exists but is not a symlink (file or directory)
+    WriteToLogs "Removing existing non-symlink item at $twine_link"
+    rm -rf "$twine_link"
+  fi
+
+  # Create new symlink
+  if ln -s "$twine_target" "$twine_link"; then
+    WriteToLogs "Created symlink: $twine_link → $twine_target"
+  else
+    WriteToLogs "Error: Failed to create symlink at $twine_link"
+    EndFunctionLog
+    return 1
+  fi
+
   EndFunctionLog
 }
 
@@ -376,7 +422,7 @@ FixLibraryPerms() {
   EndFunctionLog
 }
 
-CopyRoamingAppFiles() {
+SyncFiles() {
   StartFunctionLog
 
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
@@ -509,7 +555,7 @@ display_progress() {
   WriteToLogs "Current User: $CurrentUSER"
   
   touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
-  chown $CurrentUser "/Users/$CurrentUSER/Library/Preferences/com.apple.dock.plist"
+  chown $CurrentUSER "/Users/$CurrentUSER/Library/Preferences/com.apple.dock.plist"
 
   CheckIfADAccount
   
@@ -553,11 +599,10 @@ display_progress() {
   RedirectIfADAccount
   PinRedirectedFolders
   CreateDocumentLibraryFolders
-  PreStageUnlinkedAppFolders
   LinkLibraryFolders
   LinkTwineFolders
   FixLibraryPerms
-  CopyRoamingAppFiles
+  SyncFiles
   
   WriteToLogs "Login script complete."
   
