@@ -294,7 +294,7 @@ LinkLibraryFolders() {
   mkdir -p "/Users/Shared/minecraft" || WriteToLogs "Failed to create directory /Users/Shared/minecraft"
   mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Library/Application Support/minecraft"
   
-  local mineFolders=("assets" "versions")
+  local mineFolders=("assets" "versions" "launcher")
   
   for m in "${mineFolders[@]}"; do
     if [ ! -d "/Users/Shared/minecraft/$m" ]; then
