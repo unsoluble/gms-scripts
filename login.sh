@@ -5,11 +5,13 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-05-26-1021"
+SCRIPT_VERSION="2025-09-04-0951"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
-# Age threshold for local home deletion
+# Age threshold for local home cleanup (days)
 AGE_THRESHOLD=15
+# Age threshold for local home deletion (days)
+OLD_AGE_THRESHOLD=120
 
 # Notifier UI paths.
 APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
@@ -457,11 +459,6 @@ SyncFiles() {
   for file in "${files[@]}"; do
     if [ -e "$srcBase/$file" ]; then
       rsync -avz "$srcBase/$file" "$destBase/"
-      if [ $? -eq 0 ]; then
-        WriteToLogs "Successfully synced $file from $srcBase to $destBase."
-      else
-        WriteToLogs "Error syncing $file from $srcBase to $destBase."
-      fi
     else
       WriteToLogs "File $srcBase/$file does not exist. Skipping."
     fi
@@ -478,6 +475,7 @@ SyncFiles() {
 DeleteOldLocalHomes() {
   # This function frees up space on the client by deleting selected large folders
   # in users' local home directories that haven't been modified in AGE_THRESHOLD days.
+  # It also fully deletes local homes that haven't been modified in OLD_AGE_THRESHOLD days.
   # It does not touch files in the users' actual home directories on the network share.
 
   StartFunctionLog
@@ -487,59 +485,81 @@ DeleteOldLocalHomes() {
 
   for dir in "$BASE_DIR"/*; do
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
-
+    
     username=$(basename "$dir")
-
+    
     case "$username" in
       "Shared"|".localized"|"admin")
         continue
         ;;
     esac
-
-    if [[ "$(realpath "$dir")" == "$BASE_DIR"/* ]] && [ "$(find "$dir" -maxdepth 0 -type d -not -mtime -$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
-      WriteToLogs "Cleaning up selected folders in $username's local home."
-
+    
+    # Resolve path and validate it's under BASE_DIR
+    resolved=$(realpath "$dir" 2>/dev/null) || continue
+    case "$resolved" in
+      "$BASE_DIR"/*) ;;  # OK
+      *)
+        WriteToLogs "Skipping suspicious path $resolved."
+        continue
+        ;;
+    esac
+    
+    # Check for very old homes
+    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +$OLD_AGE_THRESHOLD | wc -l)" -gt 0 ]; then
+      WriteToLogs "Deleting local home for $username, not modified in last $OLD_AGE_THRESHOLD days."
+      if rm -rf -- "$dir"; then
+        WriteToLogs "Successfully deleted $dir."
+      else
+        WriteToLogs "Error deleting $dir."
+      fi
+      
+    # Check for old and/or large homes
+    elif [ "$(find "$dir" -maxdepth 0 -type d -mtime +$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
+      WriteToLogs "Cleaning up large folders in $username's local home."
+      
       # Paths to delete inside the user's home
       folders_to_delete=(
         "$dir/Library/Application Support/minecraft/saves"
         "$dir/Music/GarageBand"
       )
-
+      
       for target in "${folders_to_delete[@]}"; do
         if [ -d "$target" ]; then
-          rm_output=$(rm -rf "$target" 2>&1)
-          if [ $? -eq 0 ]; then
+          if rm -rf -- "$target" 2>/dev/null; then
             WriteToLogs "Deleted $target."
           else
-            WriteToLogs "Error deleting $target: $rm_output"
+            WriteToLogs "Error deleting $target."
           fi
         else
           WriteToLogs "Skipped $target (not found)."
         fi
       done
-
+      
       # Also delete folders in ~/Library over 500MB
       LIBRARY_DIR="$dir/Library"
       if [ -d "$LIBRARY_DIR" ]; then
         find "$LIBRARY_DIR" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
-          folder_size_kb=$(du -sk "$subdir" | awk '{print $1}')
+          folder_size_kb=$(du -sk "$subdir" | cut -f1)
+          folder_size_mb=$((folder_size_kb / 1024))
           if [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
-            if rm -rf "$subdir"; then
-              WriteToLogs "Deleted large folder $subdir (${folder_size_kb}KB)."
+            if rm -rf -- "$subdir"; then
+              WriteToLogs "Deleted large folder $subdir (${folder_size_mb}MB)."
             else
               WriteToLogs "Error deleting large folder $subdir."
             fi
           fi
         done
       fi
-
+      
     else
       WriteToLogs "Skipping $dir. Either recently modified or not valid."
     fi
+
   done
 
   EndFunctionLog
 }
+
 
 OnExit() {
   jamf policy -event synctohome
