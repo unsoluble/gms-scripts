@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-09-04-0951"
+SCRIPT_VERSION="2025-09-09-1234"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 # Age threshold for local home cleanup (days)
@@ -296,7 +296,7 @@ LinkLibraryFolders() {
   mkdir -p "/Users/Shared/minecraft" || WriteToLogs "Failed to create directory /Users/Shared/minecraft"
   mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Library/Application Support/minecraft"
   
-  local mineFolders=("assets" "versions" "launcher")
+  local mineFolders=("assets" "versions")
   
   for m in "${mineFolders[@]}"; do
     if [ ! -d "/Users/Shared/minecraft/$m" ]; then
