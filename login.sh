@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-09-09-1234"
+SCRIPT_VERSION="2025-09-15-1045"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 # Age threshold for local home cleanup (days)
@@ -519,8 +519,8 @@ DeleteOldLocalHomes() {
       
       # Paths to delete inside the user's home
       folders_to_delete=(
-        "$dir/Library/Application Support/minecraft/saves"
-        "$dir/Music/GarageBand"
+        $dir/Library/Application\ Support/minecraft/saves
+        $dir/Music/GarageBand
       )
       
       for target in "${folders_to_delete[@]}"; do
