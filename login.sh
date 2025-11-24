@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2025-09-15-1045"
+SCRIPT_VERSION="2025-11-24-1014"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 # Age threshold for local home cleanup (days)
@@ -471,31 +471,29 @@ SyncFiles() {
   EndFunctionLog
 }
 
-
 DeleteOldLocalHomes() {
-  # This function frees up space on the client by deleting selected large folders
-  # in users' local home directories that haven't been modified in AGE_THRESHOLD days.
-  # It also fully deletes local homes that haven't been modified in OLD_AGE_THRESHOLD days.
-  # It does not touch files in the users' actual home directories on the network share.
-
   StartFunctionLog
 
   BASE_DIR="/Users"
   SIZE_THRESHOLD_KB=512000  # 500MB in kb
 
   for dir in "$BASE_DIR"/*; do
+    # ensure it's a directory and not a symlink
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
-    
+
     username=$(basename "$dir")
-    
+
     case "$username" in
       "Shared"|".localized"|"admin")
         continue
         ;;
     esac
-    
-    # Resolve path and validate it's under BASE_DIR
-    resolved=$(realpath "$dir" 2>/dev/null) || continue
+
+    # resolve path robustly (use pwd -P fallback, avoid depending on realpath)
+    resolved=$(cd "$dir" 2>/dev/null && pwd -P) || {
+      WriteToLogs "Could not resolve $dir, skipping"
+      continue
+    }
     case "$resolved" in
       "$BASE_DIR"/*) ;;  # OK
       *)
@@ -503,56 +501,72 @@ DeleteOldLocalHomes() {
         continue
         ;;
     esac
-    
-    # Check for very old homes
-    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +$OLD_AGE_THRESHOLD | wc -l)" -gt 0 ]; then
+
+    # If the whole home is very old, remove it entirely
+    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +"$OLD_AGE_THRESHOLD" 2>/dev/null | wc -l)" -gt 0 ]; then
       WriteToLogs "Deleting local home for $username, not modified in last $OLD_AGE_THRESHOLD days."
       if rm -rf -- "$dir"; then
         WriteToLogs "Successfully deleted $dir."
       else
         WriteToLogs "Error deleting $dir."
       fi
-      
-    # Check for old and/or large homes
-    elif [ "$(find "$dir" -maxdepth 0 -type d -mtime +$AGE_THRESHOLD | wc -l)" -gt 0 ]; then
-      WriteToLogs "Cleaning up large folders in $username's local home."
-      
-      # Paths to delete inside the user's home
-      folders_to_delete=(
-        $dir/Library/Application\ Support/minecraft/saves
-        $dir/Music/GarageBand
-      )
-      
-      for target in "${folders_to_delete[@]}"; do
-        if [ -d "$target" ]; then
-          if rm -rf -- "$target" 2>/dev/null; then
-            WriteToLogs "Deleted $target."
+      continue
+    fi
+
+    # For large/old internal folders, explicitly check the target folders
+    WriteToLogs "Checking $username for old/large targets."
+
+    folders_to_delete=(
+      "$dir/Library/Application Support/minecraft/saves"
+      "$dir/Music/GarageBand"
+    )
+
+    for target in "${folders_to_delete[@]}"; do
+      WriteToLogs "Inspecting target: [$target]"
+
+      if [ -d "$target" ]; then
+        ls -lad "$target" >> "$SYNCLOG" 2>&1
+
+        # If the target itself is older than AGE_THRESHOLD, delete it
+        if [ "$(find "$target" -maxdepth 0 -type d -mtime +"$AGE_THRESHOLD" 2>/dev/null | wc -l)" -gt 0 ]; then
+          if rm -rf -- "$target"; then
+            WriteToLogs "Deleted $target (older than $AGE_THRESHOLD days)."
           else
             WriteToLogs "Error deleting $target."
           fi
-        else
-          WriteToLogs "Skipped $target (not found)."
+          continue
+        fi
+
+        # Or if the folder is very large, delete it
+        folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1 || echo 0)
+        if [ -n "$folder_size_kb" ] && [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
+          if rm -rf -- "$target"; then
+            WriteToLogs "Deleted large folder $target ($(expr $folder_size_kb / 1024)MB)."
+          else
+            WriteToLogs "Error deleting large folder $target."
+          fi
+          continue
+        fi
+
+        WriteToLogs "Keeping $target (not old enough and below size threshold)."
+      else
+        WriteToLogs "Skipped $target (not found)."
+      fi
+    done
+
+    # Also prune any very large directories under ~/Library
+    LIBRARY_DIR="$dir/Library"
+    if [ -d "$LIBRARY_DIR" ]; then
+      find "$LIBRARY_DIR" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
+        folder_size_kb=$(du -sk "$subdir" 2>/dev/null | cut -f1 || echo 0)
+        if [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
+          if rm -rf -- "$subdir"; then
+            WriteToLogs "Deleted large folder $subdir ($(expr $folder_size_kb / 1024)MB)."
+          else
+            WriteToLogs "Error deleting large folder $subdir."
+          fi
         fi
       done
-      
-      # Also delete folders in ~/Library over 500MB
-      LIBRARY_DIR="$dir/Library"
-      if [ -d "$LIBRARY_DIR" ]; then
-        find "$LIBRARY_DIR" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
-          folder_size_kb=$(du -sk "$subdir" | cut -f1)
-          folder_size_mb=$((folder_size_kb / 1024))
-          if [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
-            if rm -rf -- "$subdir"; then
-              WriteToLogs "Deleted large folder $subdir (${folder_size_mb}MB)."
-            else
-              WriteToLogs "Error deleting large folder $subdir."
-            fi
-          fi
-        done
-      fi
-      
-    else
-      WriteToLogs "Skipping $dir. Either recently modified or not valid."
     fi
 
   done
