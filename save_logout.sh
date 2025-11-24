@@ -4,7 +4,7 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
-SCRIPT_VERSION="2025-11-24-1304"
+SCRIPT_VERSION="2025-11-24-1321"
 
 # Determine ConsoleUser (the logged-in user) and that user's home directory.
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
