@@ -52,10 +52,14 @@ PROG_TIMEOUT_SECONDS=300
 PROG_MAIN_BUTTON="Cancel"
 
 # Set up a temporary pipe for the sync progress window.
-PIPE_NAME="notif"
-rm -f /tmp/${PIPE_NAME}
-mkfifo /tmp/${PIPE_NAME}
-exec 3<> /tmp/${PIPE_NAME}
+PIPE_NAME="notif_${$}"
+PIPE_PATH="/tmp/${PIPE_NAME}"
+rm -f "${PIPE_PATH}"
+mkfifo "${PIPE_PATH}"
+exec 3<> "${PIPE_PATH}"
+
+# Ensure fifo and fd are cleaned up on exit.
+trap 'rm -f "${PIPE_PATH}"; exec 3>&- 2>/dev/null || true' EXIT
 
 #############
 # Functions #
@@ -86,7 +90,7 @@ perform_rsync() {
   mkdir -p "${DEST_DIR}"
   mkdir -p "$(dirname "${RSYNC_LOG}")"
 
-  echo "Running Save & Log Out script version ${SCRIPT_VERSION}"
+  echo "Running Save & Log Out script version ${SCRIPT_VERSION}" >> "${RSYNC_LOG}"
   echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync start for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
 
   # Start rsync in the background, capture its PID.
@@ -94,11 +98,14 @@ perform_rsync() {
   local rsync_pid=$!
 
   # Start a tail that watches the logfile and pushes updates to the notifier pipe.
-  tail -n0 -F "${RSYNC_LOG}" 2>/dev/null | while IFS= read -r line; do
-    # Attempt to extract a human-friendly filename from the last rsync line.
-    latest_output=$(basename "${line}" 2>/dev/null)
-    echo -n "/bottom_message Currently syncing files, please wait."
-  done &
+  {
+    tail -n0 -F "${RSYNC_LOG}" 2>/dev/null | while IFS= read -r line; do
+      # Attempt to extract a human-friendly filename from the last rsync line.
+      latest_output=$(basename "${line}" 2>/dev/null)
+      # Send a short, stable message to the notifier (avoid spamming with long file names).
+      echo -n "/bottom_message Currently syncing files, please wait." >&3
+    done
+  } &
   local tail_pid=$!
 
   # Monitor rsync and the notifier. If the notifier disappears, cancel the rsync.
@@ -132,7 +139,7 @@ display_progress() {
     -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" \
     -main_button_label "${PROG_MAIN_BUTTON}" \
     -timeout "${PROG_TIMEOUT_SECONDS}" \
-    -always_on_top < /tmp/${PIPE_NAME} &
+    -always_on_top < "${PIPE_PATH}" &
 
   # Give the notifier a short moment to start so pgrep sees it.
   sleep 0.25
@@ -146,7 +153,9 @@ display_progress() {
   # Tell the progress UI to close, and clean up.
   echo -n "end" >&3
   exec 3>&-
-  rm -f /tmp/${PIPE_NAME}
+  rm -f "${PIPE_PATH}"
+  # Remove the trap cleanup since we've already cleaned up here.
+  trap - EXIT
 }
 
 #################
