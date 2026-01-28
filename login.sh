@@ -165,95 +165,72 @@ RedirectIfADAccount() {
   StartFunctionLog
   WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
   
-  local mounted=1
-  local retries=12  # Max retries for mount check
-  local folders=(
-    "Pictures"
-    "Documents"
-    "Downloads"
-    "Desktop"
-  )
-
+  local retries=12
+  
   # Retry loop for ensuring the remote home directory is mounted
-  while [ $mounted -gt 0 ]; do
+  while [ $retries -gt 0 ]; do
     if [ -d "$MYHOMEDIR" ]; then
       WriteToLogs "$MYHOMEDIR is mounted"
-      mounted=0
       
+      local folders=("Pictures" "Documents" "Downloads" "Desktop")
       for i in "${folders[@]}"; do
         # Ensure the folder exists in the remote directory
-        if [ -d "$MYHOMEDIR/$i" ]; then
-          WriteToLogs "$i available"
-        else
-          WriteToLogs "$i not available, creating..."
-          mkdir -p "$MYHOMEDIR/$i"
-          local status=$?
-          if [ $status -eq 0 ]; then
-            WriteToLogs "$MYHOMEDIR/$i created successfully"
-          elif [ $status -eq 2 ]; then
-            WriteToLogs "Failed to create $MYHOMEDIR/$i due to insufficient permissions"
-          else
-            WriteToLogs "$MYHOMEDIR/$i already exists"
-          fi
-        fi
-
-        # Handle existing symlinks or directories
-        WriteToLogs "Rebuilding symlink for $i"
-        if [ -L "/Users/$CurrentUSER/$i" ]; then
-          rm "/Users/$CurrentUSER/$i"
-        elif [ -d "/Users/$CurrentUSER/$i" ]; then
-          rm -r "/Users/$CurrentUSER/$i"
-        elif [ -e "/Users/$CurrentUSER/$i" ]; then
-          rm "/Users/$CurrentUSER/$i"
-        fi
-
-        # Create new symlink
+        mkdir -p "$MYHOMEDIR/$i"
+        
+        # Rebuild symlink safely
+        rm -rf "/Users/$CurrentUSER/$i"
         ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/$i"
       done
-
+      
+      EndFunctionLog
+      return 0 # Success
     else
-      WriteToLogs "$MYHOMEDIR not available yet, waiting..."
+      WriteToLogs "$MYHOMEDIR not available yet, waiting... ($retries retries left)"
       sleep 5
-      retries=$((retries - 1))
-      if [ $retries -le 0 ]; then
-        WriteToLogs "Failed to detect $MYHOMEDIR after multiple retries. Exiting."
-        EndFunctionLog
-        return 1
-      fi
+      ((retries--))
     fi
   done
 
+  WriteToLogs "CRITICAL: Failed to detect $MYHOMEDIR. Aborting redirections to prevent local data corruption."
   EndFunctionLog
+  return 1 # Failure
 }
 
 # Replace the default pinned Sidebar folders with new shortcuts.
-PinRedirectedFolders()  {
+PinRedirectedFolders() {
   StartFunctionLog
   
-  function remove_mysides() {
-    local uid="$1"
-    shift  # Shift arguments so $2 becomes $1, $3 becomes $2, etc.
-    for name in "$@"; do
-      launchctl asuser "$uid" /usr/local/bin/mysides remove "$name"
-    done
-  }
-  
-  function add_mysides() {
-    local uid="$1"
-    shift  # Shift arguments so $2 becomes $1, $3 becomes $2, etc.
-    for name in "$@"; do
-      launchctl asuser "$uid" /usr/local/bin/mysides add "$name" file:///Users/$CurrentUSER/$name
-    done
-  }
-  
+  # Ensure we have a valid UID and binary
   local uid=$(id -u "$CurrentUSER")
-  
-  # Remove default pinned Sidebar folders
-  remove_mysides $uid "Desktop" "Downloads" "Documents" "Pictures" "Music" "Library"
-  
-  # Pin new Sidebar folders
-  add_mysides $uid "Desktop" "Downloads" "Documents" "Pictures" "Music" "Library"
+  local mysides_bin="/usr/local/bin/mysides"
+
+  if [ ! -f "$mysides_bin" ]; then
+    WriteToLogs "Error: mysides not found at $mysides_bin. Sidebar cannot be updated."
+    EndFunctionLog
+    return 1
+  fi
+
+  # Give the Finder a moment to realize the network drive is actually there
+  sleep 2
+
+  # List of folders to handle
+  local folders=("Desktop" "Documents" "Downloads" "Pictures" "Music")
+
+  for name in "${folders[@]}"; do
+    WriteToLogs "Updating sidebar favorite for $name"
     
+    # Remove existing entry (silently ignore errors if it doesn't exist)
+    launchctl asuser "$uid" "$mysides_bin" remove "$name" >/dev/null 2>&1
+    
+    # Add new entry pointing DIRECTLY to the network home to avoid symlink breakage
+    # We use the $MYHOMEDIR variable defined earlier in the script
+    launchctl asuser "$uid" "$mysides_bin" add "$name" "file://$MYHOMEDIR/$name"
+  done
+
+  # Add Music as well, with a slightly modified path
+  launchctl asuser "$uid" "$mysides_bin" remove "Music" >/dev/null 2>&1
+  launchctl asuser "$uid" "$mysides_bin" add "Music" "file:///Users/$CurrentUSER/Music"
+
   EndFunctionLog
 }
 
@@ -474,101 +451,44 @@ SyncFiles() {
 DeleteOldLocalHomes() {
   StartFunctionLog
 
-  BASE_DIR="/Users"
-  SIZE_THRESHOLD_KB=512000  # 500MB in kb
+  local base_dir="/Users"
+  local size_threshold_kb=512000 # 500MB
 
-  for dir in "$BASE_DIR"/*; do
-    # ensure it's a directory and not a symlink
+  for dir in "$base_dir"/*; do
+    # Skip symlinks and system accounts
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    local username=$(basename "$dir")
+    [[ "$username" =~ ^(Shared|admin|.localized|Shared)$ ]] && continue
 
-    username=$(basename "$dir")
-
-    case "$username" in
-      "Shared"|".localized"|"admin")
-        continue
-        ;;
-    esac
-
-    # resolve path robustly (use pwd -P fallback, avoid depending on realpath)
-    resolved=$(cd "$dir" 2>/dev/null && pwd -P) || {
-      WriteToLogs "Could not resolve $dir, skipping"
-      continue
-    }
-    case "$resolved" in
-      "$BASE_DIR"/*) ;;  # OK
-      *)
-        WriteToLogs "Skipping suspicious path $resolved."
-        continue
-        ;;
-    esac
-
-    # If the whole home is very old, remove it entirely
-    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +"$OLD_AGE_THRESHOLD" 2>/dev/null | wc -l)" -gt 0 ]; then
-      WriteToLogs "Deleting local home for $username, not modified in last $OLD_AGE_THRESHOLD days."
-      if rm -rf -- "$dir"; then
-        WriteToLogs "Successfully deleted $dir."
-      else
-        WriteToLogs "Error deleting $dir."
-      fi
+    # If the user hasn't touched their home in 120 days, wipe the whole thing.
+    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +"$OLD_AGE_THRESHOLD" 2>/dev/null)" ]; then
+      WriteToLogs "Deleting stale local home for $username (older than $OLD_AGE_THRESHOLD days)."
+      rm -rf "$dir"
       continue
     fi
 
-    # For large/old internal folders, explicitly check the target folders
-    WriteToLogs "Checking $username for old/large targets."
+    # We ONLY check sizes if the directory is older than the 15-day AGE_THRESHOLD.
+    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +"$AGE_THRESHOLD" 2>/dev/null)" ]; then
+      
+      local folders_to_check=(
+        "$dir/Library/Application Support/minecraft/saves"
+        "$dir/Music/GarageBand"
+        "$dir/Library/Caches"
+      )
 
-    folders_to_delete=(
-      "$dir/Library/Application Support/minecraft/saves"
-      "$dir/Music/GarageBand"
-    )
-
-    for target in "${folders_to_delete[@]}"; do
-      WriteToLogs "Inspecting target: [$target]"
-
-      if [ -d "$target" ]; then
-        ls -lad "$target" >> "$SYNCLOG" 2>&1
-
-        # If the target itself is older than AGE_THRESHOLD, delete it
-        if [ "$(find "$target" -maxdepth 0 -type d -mtime +"$AGE_THRESHOLD" 2>/dev/null | wc -l)" -gt 0 ]; then
-          if rm -rf -- "$target"; then
-            WriteToLogs "Deleted $target (older than $AGE_THRESHOLD days)."
-          else
-            WriteToLogs "Error deleting $target."
-          fi
-          continue
-        fi
-
-        # Or if the folder is very large, delete it
-        folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1 || echo 0)
-        if [ -n "$folder_size_kb" ] && [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
-          if rm -rf -- "$target"; then
-            WriteToLogs "Deleted large folder $target ($(expr $folder_size_kb / 1024)MB)."
-          else
-            WriteToLogs "Error deleting large folder $target."
-          fi
-          continue
-        fi
-
-        WriteToLogs "Keeping $target (not old enough and below size threshold)."
-      else
-        WriteToLogs "Skipped $target (not found)."
-      fi
-    done
-
-    # Also prune any very large directories under ~/Library
-    LIBRARY_DIR="$dir/Library"
-    if [ -d "$LIBRARY_DIR" ]; then
-      find "$LIBRARY_DIR" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
-        folder_size_kb=$(du -sk "$subdir" 2>/dev/null | cut -f1 || echo 0)
-        if [ "$folder_size_kb" -gt "$SIZE_THRESHOLD_KB" ]; then
-          if rm -rf -- "$subdir"; then
-            WriteToLogs "Deleted large folder $subdir ($(expr $folder_size_kb / 1024)MB)."
-          else
-            WriteToLogs "Error deleting large folder $subdir."
+      for target in "${folders_to_check[@]}"; do
+        if [ -d "$target" ]; then
+          local folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1 || echo 0)
+          
+          if [ "$folder_size_kb" -gt "$size_threshold_kb" ]; then
+            WriteToLogs "Deleting large folder for $username: $target ($(expr $folder_size_kb / 1024)MB) - exceeds age and size threshold."
+            rm -rf "$target"
           fi
         fi
       done
+    else
+      WriteToLogs "Skipping size cleanup for $username; account is younger than $AGE_THRESHOLD days."
     fi
-
   done
 
   EndFunctionLog
@@ -622,23 +542,17 @@ display_progress() {
     
   WriteToLogs "Home Folder is $MYHOMEDIR"
   
-  if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
-    if [ ! -d "$MYHOMEDIR/Library/Preferences" ]; then
-      CreateHomeLibraryFolders
-    else
-      WriteToLogs "Home Library exists already"
-    fi
+  if RedirectIfADAccount; then
+    PinRedirectedFolders
+    CreateDocumentLibraryFolders
+    LinkLibraryFolders
+    LinkTwineFolders
+    FixLibraryPerms
+    SyncFiles
+    WriteToLogs "Login script complete."
+  else
+    WriteToLogs "ERROR: Setup aborted due to missing network home."
   fi
-  
-  RedirectIfADAccount
-  PinRedirectedFolders
-  CreateDocumentLibraryFolders
-  LinkLibraryFolders
-  LinkTwineFolders
-  FixLibraryPerms
-  SyncFiles
-  
-  WriteToLogs "Login script complete."
   
   # Tell the progress UI to close, and clean up.
   echo -n "/percent 100" >&3
