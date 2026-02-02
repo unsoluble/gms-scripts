@@ -4,7 +4,7 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
-SCRIPT_VERSION="2025-11-24-1321"
+SCRIPT_VERSION="2026-02-02-1312"
 
 # Determine ConsoleUser (the logged-in user) and that user's home directory.
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
@@ -94,7 +94,7 @@ perform_rsync() {
   echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync start for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
 
   # Start rsync in the background, capture its PID.
-  rsync -avz --delete "${SOURCE_DIR}" "${DEST_DIR}" >> "${RSYNC_LOG}" 2>&1 &
+  rsync -avzu "${SOURCE_DIR}" "${DEST_DIR}" >> "${RSYNC_LOG}" 2>&1 &
   local rsync_pid=$!
 
   # Start a tail that watches the logfile and pushes updates to the notifier pipe.
