@@ -200,36 +200,31 @@ RedirectIfADAccount() {
 PinRedirectedFolders() {
   StartFunctionLog
   
-  # Ensure we have a valid UID and binary
   local uid=$(id -u "$CurrentUSER")
   local mysides_bin="/usr/local/bin/mysides"
 
-  if [ ! -f "$mysides_bin" ]; then
-    WriteToLogs "Error: mysides not found at $mysides_bin. Sidebar cannot be updated."
+  if [[ ! -f "$mysides_bin" ]]; then
+    WriteToLogs "Error: mysides not found at $mysides_bin."
     EndFunctionLog
     return 1
   fi
 
-  # Give the Finder a moment to realize the network drive is actually there
+  # Give macOS a moment to settle the mount
   sleep 2
 
-  # List of folders to handle
-  local folders=("Desktop" "Documents" "Downloads" "Pictures" "Music")
+  local folders=("Desktop" "Documents" "Downloads" "Pictures")
 
   for name in "${folders[@]}"; do
     WriteToLogs "Updating sidebar favorite for $name"
-    
-    # Remove existing entry (silently ignore errors if it doesn't exist)
     launchctl asuser "$uid" "$mysides_bin" remove "$name" >/dev/null 2>&1
-    
-    # Add new entry pointing DIRECTLY to the network home to avoid symlink breakage
-    # We use the $MYHOMEDIR variable defined earlier in the script
-    launchctl asuser "$uid" "$mysides_bin" add "$name" "file://$MYHOMEDIR/$name"
+    launchctl asuser "$uid" "$mysides_bin" add "$name" "file:///${MYHOMEDIR#/}/$name"
   done
 
-  # Add Music as well, with a slightly modified path
+  WriteToLogs "Updating local sidebar favorite for Music"
   launchctl asuser "$uid" "$mysides_bin" remove "Music" >/dev/null 2>&1
   launchctl asuser "$uid" "$mysides_bin" add "Music" "file:///Users/$CurrentUSER/Music"
+
+  launchctl asuser "$uid" killall sharedfilelistd 2>/dev/null
 
   EndFunctionLog
 }
