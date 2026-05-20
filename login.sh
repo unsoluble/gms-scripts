@@ -5,13 +5,15 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-01-28-1155"
+SCRIPT_VERSION="2026-05-19-1845"
 CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
 SYNCLOG="/tmp/LibrarySync.log"
 # Age threshold for local home cleanup (days)
 AGE_THRESHOLD=15
 # Age threshold for local home deletion (days)
-OLD_AGE_THRESHOLD=120
+OLD_AGE_THRESHOLD=60
+# Local marker used to record the last completed login for cleanup age checks.
+LOCAL_LOGIN_STAMP_REL="Library/Application Support/com.gvsd.LocalHomeLastLogin"
 
 # Notifier UI paths.
 APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
@@ -448,43 +450,188 @@ DeleteOldLocalHomes() {
 
   local base_dir="/Users"
   local size_threshold_kb=512000 # 500MB
+  local now_epoch=$(date +%s)
 
   for dir in "$base_dir"/*; do
-    # Skip symlinks and system accounts
+    # Skip symlinks and non-directories.
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     local username=$(basename "$dir")
-    [[ "$username" =~ ^(Shared|admin|.localized|Shared)$ ]] && continue
+    local age_days=""
+    local age_source=""
+    local age_epoch=""
+    local age_timestamp=""
 
-    # If the user hasn't touched their home in 120 days, wipe the whole thing.
-    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +"$OLD_AGE_THRESHOLD" 2>/dev/null)" ]; then
-      WriteToLogs "Deleting stale local home for $username (older than $OLD_AGE_THRESHOLD days)."
-      rm -rf "$dir"
+    WriteToLogs "Testing local home for $username at $dir."
+
+    if [[ "$username" =~ ^(Shared|Guest|admin|helpdesk|jweston|\.localized)$ ]]; then
+      WriteToLogs "Decision for $username: skipped protected/system/local account."
       continue
     fi
 
-    # We ONLY check sizes if the directory is older than the 15-day AGE_THRESHOLD.
-    if [ "$(find "$dir" -maxdepth 0 -type d -mtime +"$AGE_THRESHOLD" 2>/dev/null)" ]; then
-      
-      local folders_to_check=(
-        "$dir/Library/Application Support/minecraft/saves"
-        "$dir/Music/GarageBand"
-        "$dir/Library/Caches"
-      )
+    if ! GetLocalHomeAge "$dir" "$now_epoch"; then
+      WriteToLogs "Decision for $username: skipped; could not determine a reliable age for local home."
+      continue
+    fi
 
-      for target in "${folders_to_check[@]}"; do
-        if [ -d "$target" ]; then
-          local folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1 || echo 0)
-          
-          if [ "$folder_size_kb" -gt "$size_threshold_kb" ]; then
-            WriteToLogs "Deleting large folder for $username: $target ($(expr $folder_size_kb / 1024)MB) - exceeds age and size threshold."
-            rm -rf "$target"
-          fi
+    age_days="$LOCAL_HOME_AGE_DAYS"
+    age_source="$LOCAL_HOME_AGE_SOURCE"
+    age_epoch="$LOCAL_HOME_AGE_EPOCH"
+    age_timestamp=$(date -r "$age_epoch" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "unknown")
+
+    WriteToLogs "Age signal for $username: source=$age_source; timestamp=$age_timestamp; age=${age_days} days."
+
+    if [ "$username" = "$CurrentUSER" ]; then
+      WriteToLogs "Decision for $username: skipped active console user; login stamp will be updated after cleanup."
+      continue
+    fi
+
+    # If the user has not logged in for 120 days, wipe the whole local home.
+    if [ "$age_days" -ge "$OLD_AGE_THRESHOLD" ]; then
+      WriteToLogs "Decision for $username: delete stale local home; age ${age_days} days meets $OLD_AGE_THRESHOLD day threshold."
+      if rm -rf "$dir"; then
+        if [ -e "$dir" ]; then
+          WriteToLogs "ERROR for $username: rm completed but $dir still exists."
+        else
+          WriteToLogs "Result for $username: deleted local home $dir."
         fi
-      done
-    else
-      WriteToLogs "Skipping size cleanup for $username; account is younger than $AGE_THRESHOLD days."
+      else
+        WriteToLogs "ERROR for $username: failed to delete local home $dir."
+      fi
+      continue
+    fi
+
+    if [ "$age_days" -lt "$AGE_THRESHOLD" ]; then
+      WriteToLogs "Decision for $username: no cleanup; age ${age_days} days is younger than $AGE_THRESHOLD day threshold."
+      continue
+    fi
+
+    WriteToLogs "Decision for $username: inspect high-size local content; age ${age_days} days is between $AGE_THRESHOLD and $OLD_AGE_THRESHOLD days."
+    CleanLargeLocalContent "$username" "$dir" "$size_threshold_kb"
+  done
+
+  EndFunctionLog
+}
+
+GetLocalHomeAge() {
+  local dir="$1"
+  local now_epoch="$2"
+  local marker="$dir/$LOCAL_LOGIN_STAMP_REL"
+  local newest_epoch=""
+  local newest_source=""
+
+  LOCAL_HOME_AGE_DAYS=""
+  LOCAL_HOME_AGE_SOURCE=""
+  LOCAL_HOME_AGE_EPOCH=""
+
+  if [ -f "$marker" ]; then
+    newest_epoch=$(stat -f "%m" "$marker" 2>/dev/null)
+    if [[ "$newest_epoch" =~ ^[0-9]+$ ]]; then
+      LOCAL_HOME_AGE_DAYS=$(( (now_epoch - newest_epoch) / 86400 ))
+      [ "$LOCAL_HOME_AGE_DAYS" -lt 0 ] && LOCAL_HOME_AGE_DAYS=0
+      LOCAL_HOME_AGE_SOURCE="login-stamp:$marker"
+      LOCAL_HOME_AGE_EPOCH="$newest_epoch"
+      return 0
+    fi
+    WriteToLogs "Warning: login stamp exists but could not be read: $marker"
+  else
+    WriteToLogs "No login stamp found for $dir; using fallback age signal."
+  fi
+
+  local fallback_paths=(
+    "$dir"
+    "$dir/Library"
+    "$dir/Library/Preferences"
+    "$dir/Library/Application Support"
+    "$dir/Library/Caches"
+    "$dir/Music"
+    "$dir/Music/GarageBand"
+    "$dir/Twine"
+  )
+
+  for path in "${fallback_paths[@]}"; do
+    [ -e "$path" ] || continue
+    [ -L "$path" ] && continue
+
+    local path_epoch=$(stat -f "%m" "$path" 2>/dev/null)
+    if [[ "$path_epoch" =~ ^[0-9]+$ ]] && { [ -z "$newest_epoch" ] || [ "$path_epoch" -gt "$newest_epoch" ]; }; then
+      newest_epoch="$path_epoch"
+      newest_source="$path"
     fi
   done
+
+  if [ -z "$newest_epoch" ]; then
+    return 1
+  fi
+
+  LOCAL_HOME_AGE_DAYS=$(( (now_epoch - newest_epoch) / 86400 ))
+  [ "$LOCAL_HOME_AGE_DAYS" -lt 0 ] && LOCAL_HOME_AGE_DAYS=0
+  LOCAL_HOME_AGE_SOURCE="fallback-newest-known-path:$newest_source"
+  LOCAL_HOME_AGE_EPOCH="$newest_epoch"
+  return 0
+}
+
+CleanLargeLocalContent() {
+  local username="$1"
+  local dir="$2"
+  local size_threshold_kb="$3"
+  local folders_to_check=(
+    "$dir/Library/Application Support/minecraft/saves"
+    "$dir/Music/GarageBand"
+    "$dir/Library/Caches"
+  )
+
+  for target in "${folders_to_check[@]}"; do
+    if [ ! -d "$target" ]; then
+      WriteToLogs "Result for $username: cleanup target missing, skipped: $target"
+      continue
+    fi
+
+    local folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1)
+    if ! [[ "$folder_size_kb" =~ ^[0-9]+$ ]]; then
+      WriteToLogs "ERROR for $username: could not determine size for $target; skipped."
+      continue
+    fi
+
+    local folder_size_mb=$(( folder_size_kb / 1024 ))
+    local threshold_mb=$(( size_threshold_kb / 1024 ))
+
+    if [ "$folder_size_kb" -gt "$size_threshold_kb" ]; then
+      WriteToLogs "Decision for $username: delete large local content $target (${folder_size_mb}MB > ${threshold_mb}MB)."
+      if rm -rf "$target"; then
+        if [ -e "$target" ]; then
+          WriteToLogs "ERROR for $username: rm completed but $target still exists."
+        else
+          WriteToLogs "Result for $username: deleted large local content $target."
+        fi
+      else
+        WriteToLogs "ERROR for $username: failed to delete large local content $target."
+      fi
+    else
+      WriteToLogs "Result for $username: kept $target (${folder_size_mb}MB <= ${threshold_mb}MB)."
+    fi
+  done
+}
+
+UpdateCurrentLoginStamp() {
+  StartFunctionLog
+
+  local marker_dir="/Users/$CurrentUSER/$(dirname "$LOCAL_LOGIN_STAMP_REL")"
+  local marker_path="/Users/$CurrentUSER/$LOCAL_LOGIN_STAMP_REL"
+
+  if [ -z "$CurrentUSER" ] || [ "$CurrentUSER" = "loginwindow" ]; then
+    WriteToLogs "ERROR: Current user is not available; cannot update local login stamp."
+    EndFunctionLog
+    return 1
+  fi
+
+  if mkdir -p "$marker_dir" && touch "$marker_path"; then
+    chown "$CurrentUSER" "$marker_path" 2>/dev/null || WriteToLogs "Warning: could not set owner on $marker_path"
+    WriteToLogs "Updated local login stamp for $CurrentUSER at $marker_path."
+  else
+    WriteToLogs "ERROR: Failed to update local login stamp for $CurrentUSER at $marker_path."
+    EndFunctionLog
+    return 1
+  fi
 
   EndFunctionLog
 }
@@ -566,5 +713,6 @@ display_progress() {
 # Delete the stale local homes after the UI has closed, as we don't need to watch it.
 display_progress
 DeleteOldLocalHomes
+UpdateCurrentLoginStamp
 
 exit 0
