@@ -5,13 +5,16 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-05-19-1845"
-CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
-SYNCLOG="/tmp/LibrarySync.log"
+SCRIPT_VERSION="2026-05-20-1630"
+CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
+SYNCLOG="${GMS_SYNCLOG:-/tmp/LibrarySync.log}"
+USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
 # Age threshold for local home cleanup (days)
 AGE_THRESHOLD=15
 # Age threshold for local home deletion (days)
 OLD_AGE_THRESHOLD=60
+# Size threshold for local content cleanup (KB)
+LOCAL_CONTENT_SIZE_THRESHOLD_KB="${GMS_LOCAL_CONTENT_SIZE_THRESHOLD_KB:-512000}"
 # Local marker used to record the last completed login for cleanup age checks.
 LOCAL_LOGIN_STAMP_REL="Library/Application Support/com.gvsd.LocalHomeLastLogin"
 
@@ -26,25 +29,11 @@ PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
                         /user_interruption_allowed false \
                         /exit_on_completion true"
 
-# Set up a temporary pipe for the sync progress window.
+# Temporary pipe for the sync progress window.
 PIPE_NAME="login_pipe"
-rm -f "/tmp/${PIPE_NAME}"
-mkfifo "/tmp/${PIPE_NAME}"
-exec 3<> "/tmp/${PIPE_NAME}"
-
-# Rotate the logs.
-if [ -f "$SYNCLOG" ]; then
-  mv "$SYNCLOG" "/tmp/LibrarySync-$(date +%Y-%m-%d_%H-%M-%S).log"
-fi
-# Delete archived logs older than 2 days.
-find /tmp -name "LibrarySync-*.log" -mtime +2 -exec rm {} \;
 
 # Declare a global for the function logging routines.
 FUNC_START_TIME=""
-
-touch "$SYNCLOG"
-chmod 777 "$SYNCLOG"
-chmod 777 "/usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut"
 
 #############
 # FUNCTIONS #
@@ -58,11 +47,31 @@ WriteToLogs() {
   echo "$now - $message"
 }
 
+InitializeLoginScript() {
+  # Set up the progress UI pipe only when the script is run directly.
+  rm -f "/tmp/${PIPE_NAME}"
+  mkfifo "/tmp/${PIPE_NAME}"
+  exec 3<> "/tmp/${PIPE_NAME}"
+
+  # Rotate the logs.
+  if [ -f "$SYNCLOG" ]; then
+    mv "$SYNCLOG" "/tmp/LibrarySync-$(date +%Y-%m-%d_%H-%M-%S).log"
+  fi
+  # Delete archived logs older than 2 days.
+  find /tmp -name "LibrarySync-*.log" -mtime +2 -exec rm {} \;
+
+  touch "$SYNCLOG"
+  chmod 777 "$SYNCLOG"
+  chmod 777 "/usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut"
+}
+
 # Log the start of a function, and capture the time for its duration.
 StartFunctionLog() {
   FUNC_START_TIME=$(date +%s)
   WriteToLogs "### Started ${FUNCNAME[1]} function" # FUNCNAME[1] is the name of the calling function
-  echo -n "/bottom_message Starting ${FUNCNAME[1]}..." >&3
+  if [ -e /dev/fd/3 ]; then
+    echo -n "/bottom_message Starting ${FUNCNAME[1]}..." >&3
+  fi
 }
 
 # Log the end of a function and its total duration.
@@ -448,8 +457,8 @@ SyncFiles() {
 DeleteOldLocalHomes() {
   StartFunctionLog
 
-  local base_dir="/Users"
-  local size_threshold_kb=512000 # 500MB
+  local base_dir="$USERS_BASE_DIR"
+  local size_threshold_kb="$LOCAL_CONTENT_SIZE_THRESHOLD_KB"
   local now_epoch=$(date +%s)
 
   for dir in "$base_dir"/*; do
@@ -463,13 +472,27 @@ DeleteOldLocalHomes() {
 
     WriteToLogs "Testing local home for $username at $dir."
 
-    if [[ "$username" =~ ^(Shared|Guest|admin|helpdesk|jweston|\.localized)$ ]]; then
-      WriteToLogs "Decision for $username: skipped protected/system/local account."
+    if IsProtectedLocalHome "$username"; then
+      WriteToLogs "$username: skipped protected account."
       continue
     fi
 
-    if ! GetLocalHomeAge "$dir" "$now_epoch"; then
-      WriteToLogs "Decision for $username: skipped; could not determine a reliable age for local home."
+    if [ "$username" = "$CurrentUSER" ]; then
+      WriteToLogs "$username: skipped active user; login stamp will be updated after cleanup."
+      continue
+    fi
+
+    GetLocalHomeAge "$dir" "$now_epoch"
+    local age_status=$?
+
+    if [ "$age_status" -eq 2 ]; then
+      WriteToLogs "$username: delete unstamped local home; no login stamp exists."
+      RemoveLocalPath "$username" "$dir" "unstamped local home"
+      continue
+    fi
+
+    if [ "$age_status" -ne 0 ]; then
+      WriteToLogs "$username: skipped; could not determine a reliable age for local home."
       continue
     fi
 
@@ -480,94 +503,76 @@ DeleteOldLocalHomes() {
 
     WriteToLogs "Age signal for $username: source=$age_source; timestamp=$age_timestamp; age=${age_days} days."
 
-    if [ "$username" = "$CurrentUSER" ]; then
-      WriteToLogs "Decision for $username: skipped active console user; login stamp will be updated after cleanup."
-      continue
-    fi
-
     # If the user has not logged in for 120 days, wipe the whole local home.
     if [ "$age_days" -ge "$OLD_AGE_THRESHOLD" ]; then
-      WriteToLogs "Decision for $username: delete stale local home; age ${age_days} days meets $OLD_AGE_THRESHOLD day threshold."
-      if rm -rf "$dir"; then
-        if [ -e "$dir" ]; then
-          WriteToLogs "ERROR for $username: rm completed but $dir still exists."
-        else
-          WriteToLogs "Result for $username: deleted local home $dir."
-        fi
-      else
-        WriteToLogs "ERROR for $username: failed to delete local home $dir."
-      fi
+      WriteToLogs "$username: delete stale local home; age ${age_days} days meets $OLD_AGE_THRESHOLD day threshold."
+      RemoveLocalPath "$username" "$dir" "local home"
       continue
     fi
 
     if [ "$age_days" -lt "$AGE_THRESHOLD" ]; then
-      WriteToLogs "Decision for $username: no cleanup; age ${age_days} days is younger than $AGE_THRESHOLD day threshold."
+      WriteToLogs "$username: no cleanup; age ${age_days} days is younger than $AGE_THRESHOLD day threshold."
       continue
     fi
 
-    WriteToLogs "Decision for $username: inspect high-size local content; age ${age_days} days is between $AGE_THRESHOLD and $OLD_AGE_THRESHOLD days."
+    WriteToLogs "$username: inspect high-size local content; age ${age_days} days is between $AGE_THRESHOLD and $OLD_AGE_THRESHOLD days."
     CleanLargeLocalContent "$username" "$dir" "$size_threshold_kb"
   done
 
   EndFunctionLog
 }
 
+IsProtectedLocalHome() {
+  local username="$1"
+
+  [[ "$username" =~ ^(Shared|Guest|admin|helpdesk|jweston|\.localized)$ ]]
+}
+
 GetLocalHomeAge() {
   local dir="$1"
   local now_epoch="$2"
   local marker="$dir/$LOCAL_LOGIN_STAMP_REL"
-  local newest_epoch=""
-  local newest_source=""
+  local marker_epoch=""
 
   LOCAL_HOME_AGE_DAYS=""
   LOCAL_HOME_AGE_SOURCE=""
   LOCAL_HOME_AGE_EPOCH=""
 
   if [ -f "$marker" ]; then
-    newest_epoch=$(stat -f "%m" "$marker" 2>/dev/null)
-    if [[ "$newest_epoch" =~ ^[0-9]+$ ]]; then
-      LOCAL_HOME_AGE_DAYS=$(( (now_epoch - newest_epoch) / 86400 ))
+    marker_epoch=$(stat -f "%m" "$marker" 2>/dev/null)
+    if [[ "$marker_epoch" =~ ^[0-9]+$ ]]; then
+      LOCAL_HOME_AGE_DAYS=$(( (now_epoch - marker_epoch) / 86400 ))
       [ "$LOCAL_HOME_AGE_DAYS" -lt 0 ] && LOCAL_HOME_AGE_DAYS=0
       LOCAL_HOME_AGE_SOURCE="login-stamp:$marker"
-      LOCAL_HOME_AGE_EPOCH="$newest_epoch"
+      LOCAL_HOME_AGE_EPOCH="$marker_epoch"
       return 0
     fi
     WriteToLogs "Warning: login stamp exists but could not be read: $marker"
   else
-    WriteToLogs "No login stamp found for $dir; using fallback age signal."
+    WriteToLogs "No login stamp found for $dir."
+    return 2
   fi
 
-  local fallback_paths=(
-    "$dir"
-    "$dir/Library"
-    "$dir/Library/Preferences"
-    "$dir/Library/Application Support"
-    "$dir/Library/Caches"
-    "$dir/Music"
-    "$dir/Music/GarageBand"
-    "$dir/Twine"
-  )
+  return 1
+}
 
-  for path in "${fallback_paths[@]}"; do
-    [ -e "$path" ] || continue
-    [ -L "$path" ] && continue
+RemoveLocalPath() {
+  local username="$1"
+  local target="$2"
+  local label="$3"
 
-    local path_epoch=$(stat -f "%m" "$path" 2>/dev/null)
-    if [[ "$path_epoch" =~ ^[0-9]+$ ]] && { [ -z "$newest_epoch" ] || [ "$path_epoch" -gt "$newest_epoch" ]; }; then
-      newest_epoch="$path_epoch"
-      newest_source="$path"
+  if rm -rf "$target"; then
+    if [ -e "$target" ]; then
+      WriteToLogs "$username: rm completed but $target still exists."
+      return 1
     fi
-  done
 
-  if [ -z "$newest_epoch" ]; then
-    return 1
+    WriteToLogs "$username: deleted $label $target."
+    return 0
   fi
 
-  LOCAL_HOME_AGE_DAYS=$(( (now_epoch - newest_epoch) / 86400 ))
-  [ "$LOCAL_HOME_AGE_DAYS" -lt 0 ] && LOCAL_HOME_AGE_DAYS=0
-  LOCAL_HOME_AGE_SOURCE="fallback-newest-known-path:$newest_source"
-  LOCAL_HOME_AGE_EPOCH="$newest_epoch"
-  return 0
+  WriteToLogs "$username: failed to delete $label $target."
+  return 1
 }
 
 CleanLargeLocalContent() {
@@ -582,13 +587,13 @@ CleanLargeLocalContent() {
 
   for target in "${folders_to_check[@]}"; do
     if [ ! -d "$target" ]; then
-      WriteToLogs "Result for $username: cleanup target missing, skipped: $target"
+      WriteToLogs "$username: cleanup target missing, skipped: $target"
       continue
     fi
 
     local folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1)
     if ! [[ "$folder_size_kb" =~ ^[0-9]+$ ]]; then
-      WriteToLogs "ERROR for $username: could not determine size for $target; skipped."
+      WriteToLogs "$username: could not determine size for $target; skipped."
       continue
     fi
 
@@ -596,18 +601,10 @@ CleanLargeLocalContent() {
     local threshold_mb=$(( size_threshold_kb / 1024 ))
 
     if [ "$folder_size_kb" -gt "$size_threshold_kb" ]; then
-      WriteToLogs "Decision for $username: delete large local content $target (${folder_size_mb}MB > ${threshold_mb}MB)."
-      if rm -rf "$target"; then
-        if [ -e "$target" ]; then
-          WriteToLogs "ERROR for $username: rm completed but $target still exists."
-        else
-          WriteToLogs "Result for $username: deleted large local content $target."
-        fi
-      else
-        WriteToLogs "ERROR for $username: failed to delete large local content $target."
-      fi
+      WriteToLogs "$username: delete large local content $target (${folder_size_mb}MB > ${threshold_mb}MB)."
+      RemoveLocalPath "$username" "$target" "large local content"
     else
-      WriteToLogs "Result for $username: kept $target (${folder_size_mb}MB <= ${threshold_mb}MB)."
+      WriteToLogs "$username: kept $target (${folder_size_mb}MB <= ${threshold_mb}MB)."
     fi
   done
 }
@@ -615,8 +612,8 @@ CleanLargeLocalContent() {
 UpdateCurrentLoginStamp() {
   StartFunctionLog
 
-  local marker_dir="/Users/$CurrentUSER/$(dirname "$LOCAL_LOGIN_STAMP_REL")"
-  local marker_path="/Users/$CurrentUSER/$LOCAL_LOGIN_STAMP_REL"
+  local marker_dir="$USERS_BASE_DIR/$CurrentUSER/$(dirname "$LOCAL_LOGIN_STAMP_REL")"
+  local marker_path="$USERS_BASE_DIR/$CurrentUSER/$LOCAL_LOGIN_STAMP_REL"
 
   if [ -z "$CurrentUSER" ] || [ "$CurrentUSER" = "loginwindow" ]; then
     WriteToLogs "ERROR: Current user is not available; cannot update local login stamp."
@@ -709,10 +706,17 @@ display_progress() {
   fi
 }
 
-# Do the main sequence, wrapped by the progress UI.
-# Delete the stale local homes after the UI has closed, as we don't need to watch it.
-display_progress
-DeleteOldLocalHomes
-UpdateCurrentLoginStamp
+main() {
+  InitializeLoginScript
 
-exit 0
+  # Do the main sequence, wrapped by the progress UI.
+  # Delete the stale local homes after the UI has closed, as we don't need to watch it.
+  display_progress
+  DeleteOldLocalHomes
+  UpdateCurrentLoginStamp
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main
+  exit 0
+fi
