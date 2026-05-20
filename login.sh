@@ -212,32 +212,56 @@ PinRedirectedFolders() {
   StartFunctionLog
   
   local uid=$(id -u "$CurrentUSER")
-  local mysides_bin="/usr/local/bin/mysides"
+  local mysides_bin=""
 
-  if [[ ! -f "$mysides_bin" ]]; then
-    WriteToLogs "Error: mysides not found at $mysides_bin."
+  for candidate in "/usr/local/bin/mysides" "/opt/homebrew/bin/mysides"; do
+    if [[ -x "$candidate" ]]; then
+      mysides_bin="$candidate"
+      break
+    fi
+  done
+
+  if [[ -z "$mysides_bin" ]]; then
+    WriteToLogs "Error: mysides not found."
     EndFunctionLog
     return 1
   fi
+
+  run_as_current_user() {
+    launchctl asuser "$uid" sudo -u "$CurrentUSER" env HOME="$USERS_BASE_DIR/$CurrentUSER" "$@"
+  }
+
+  update_sidebar_item() {
+    local name="$1"
+    local url="$2"
+
+    WriteToLogs "Updating sidebar favorite for $name"
+    run_as_current_user "$mysides_bin" remove "$name" >/dev/null 2>&1 || true
+
+    if run_as_current_user "$mysides_bin" add "$name" "$url" >> "$SYNCLOG" 2>&1; then
+      WriteToLogs "Updated sidebar favorite for $name -> $url"
+    else
+      WriteToLogs "Error: failed to add sidebar favorite for $name -> $url"
+      return 1
+    fi
+  }
 
   # Give macOS a moment to settle the mount
   sleep 2
 
   local folders=("Desktop" "Documents" "Downloads" "Pictures")
+  local status=0
 
   for name in "${folders[@]}"; do
-    WriteToLogs "Updating sidebar favorite for $name"
-    launchctl asuser "$uid" "$mysides_bin" remove "$name" >/dev/null 2>&1
-    launchctl asuser "$uid" "$mysides_bin" add "$name" "file:///${MYHOMEDIR#/}/$name"
+    update_sidebar_item "$name" "file:///${MYHOMEDIR#/}/$name" || status=1
   done
 
-  WriteToLogs "Updating local sidebar favorite for Music"
-  launchctl asuser "$uid" "$mysides_bin" remove "Music" >/dev/null 2>&1
-  launchctl asuser "$uid" "$mysides_bin" add "Music" "file:///Users/$CurrentUSER/Music"
+  update_sidebar_item "Music" "file:///${USERS_BASE_DIR#/}/$CurrentUSER/Music" || status=1
 
-  launchctl asuser "$uid" killall sharedfilelistd 2>/dev/null
+  run_as_current_user killall sharedfilelistd 2>/dev/null || true
 
   EndFunctionLog
+  return "$status"
 }
 
 CreateDocumentLibraryFolders() {
