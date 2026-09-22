@@ -28,6 +28,7 @@ PROG_ACCESSORY_TYPE="progressbar"
 PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
                         /user_interruption_allowed false \
                         /exit_on_completion true"
+PROG_TIMEOUT_SECONDS=300
 
 # Temporary pipe for the sync progress window.
 PIPE_NAME="login_pipe"

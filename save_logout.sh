@@ -17,13 +17,13 @@ fi
 # Set up sync sources and destinations using the real user's home dir.
 typeset -A RSYNC_PAIRS
 RSYNC_PAIRS=(
-  ["${USER_HOME}/Library/Application Support/minecraft/saves/"]="${USER_HOME}/Documents/Application Support/minecraft/saves/"
-  ["${USER_HOME}/Library/Application Support/minecraft/curseforge/"]="${USER_HOME}/Documents/Application Support/minecraft/curseforge/"
-  ["${USER_HOME}/Library/Application Support/minecraft/launcher_accounts.json"]="${USER_HOME}/Documents/Application Support/minecraft/"
-  ["${USER_HOME}/Library/Application Support/minecraft/launcher_msa_credentials.bin"]="${USER_HOME}/Documents/Application Support/minecraft/"
-  ["${USER_HOME}/Library/Application Support/minecraft/options.txt"]="${USER_HOME}/Documents/Application Support/minecraft/"
-  ["${USER_HOME}/Music/GarageBand/"]="${USER_HOME}/Documents/GarageBand/"
-  ["${USER_HOME}/Twine/"]="${USER_HOME}/Documents/Sync/Twine/"
+  "${USER_HOME}/Library/Application Support/minecraft/saves/" "${USER_HOME}/Documents/Application Support/minecraft/saves/"
+  "${USER_HOME}/Library/Application Support/minecraft/curseforge/" "${USER_HOME}/Documents/Application Support/minecraft/curseforge/"
+  "${USER_HOME}/Library/Application Support/minecraft/launcher_accounts.json" "${USER_HOME}/Documents/Application Support/minecraft/"
+  "${USER_HOME}/Library/Application Support/minecraft/launcher_msa_credentials.bin" "${USER_HOME}/Documents/Application Support/minecraft/"
+  "${USER_HOME}/Library/Application Support/minecraft/options.txt" "${USER_HOME}/Documents/Application Support/minecraft/"
+  "${USER_HOME}/Music/GarageBand/" "${USER_HOME}/Documents/GarageBand/"
+  "${USER_HOME}/Twine/" "${USER_HOME}/Documents/Sync/Twine/"
 )
 
 # Set up a unique logfile for the current user.
