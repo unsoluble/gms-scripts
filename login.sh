@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-09-22-1535"
+SCRIPT_VERSION="2026-09-22-1545"
 CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
 SYNCLOG="${GMS_SYNCLOG:-/tmp/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
@@ -656,6 +656,49 @@ RedirectAppFolderSafely() {
   return "$merge_failed"
 }
 
+# Retire a symlink previously created by this script without touching its target.
+RemoveManagedFolderRedirect() {
+  local source_path="$1"
+  local managed_target="$2"
+  local label="$3"
+  local current_target=""
+
+  if [ ! -L "$source_path" ]; then
+    if [ -e "$source_path" ]; then
+      WriteToLogs "$label uses a normal local path; no legacy redirection cleanup needed."
+    else
+      WriteToLogs "$label legacy redirection is not present; no cleanup needed."
+    fi
+    return 0
+  fi
+
+  current_target=$(readlink "$source_path")
+  if [ "$current_target" != "$managed_target" ]; then
+    WriteToLogs "Warning: $label symlink $source_path points to unexpected target $current_target; it was left untouched."
+    return 1
+  fi
+
+  if ! rm "$source_path"; then
+    WriteToLogs "Warning: Could not remove legacy $label symlink $source_path -> $managed_target."
+    return 1
+  fi
+
+  if mkdir -p "$source_path"; then
+    chown "$CurrentUSER" "$source_path" 2>/dev/null || WriteToLogs "Warning: Could not set owner on restored local $label folder $source_path."
+    chmod 700 "$source_path" 2>/dev/null || WriteToLogs "Warning: Could not set permissions on restored local $label folder $source_path."
+    WriteToLogs "Removed legacy $label redirection and restored local folder $source_path; network data at $managed_target was left untouched."
+    return 0
+  fi
+
+  WriteToLogs "Warning: Removed legacy $label symlink but could not create local folder $source_path."
+  if ln -s "$managed_target" "$source_path"; then
+    WriteToLogs "Restored legacy $label symlink after local folder creation failed."
+  else
+    WriteToLogs "CRITICAL: Could not restore legacy $label symlink $source_path -> $managed_target."
+  fi
+  return 1
+}
+
 LinkLibraryFolders() {
   StartFunctionLog
   
@@ -686,7 +729,12 @@ LinkLibraryFolders() {
     ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" || WriteToLogs "Failed to create symlink for $m"
   done
   
-  local appSubfolders=("Dock" "iMovie")
+  RemoveManagedFolderRedirect \
+    "/Users/$CurrentUSER/Library/Application Support/Dock" \
+    "/Users/$CurrentUSER/Documents/Application Support/Dock" \
+    "Dock" || WriteToLogs "Warning: Legacy Dock redirection cleanup was not completed."
+
+  local appSubfolders=("iMovie")
   
   for x in "${appSubfolders[@]}"; do
     RedirectAppFolderSafely \

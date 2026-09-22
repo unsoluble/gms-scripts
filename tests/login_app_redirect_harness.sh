@@ -88,6 +88,34 @@ else
   failures=$((failures + 1))
 fi
 
+# Retiring the old Dock redirect must remove only the managed symlink. Its
+# former target and contents remain available for conservative cleanup.
+mkdir -p "$WORKDIR/target/Dock"
+printf 'legacy wallpaper data\n' > "$WORKDIR/target/Dock/desktoppicture.db"
+ln -s "$WORKDIR/target/Dock" "$WORKDIR/source/Dock"
+RemoveManagedFolderRedirect "$WORKDIR/source/Dock" "$WORKDIR/target/Dock" "Dock"
+
+if [ -d "$WORKDIR/source/Dock" ] && [ ! -L "$WORKDIR/source/Dock" ]; then
+  printf 'PASS migration: legacy Dock symlink replaced by local directory\n'
+else
+  printf 'FAIL migration: legacy Dock symlink was not retired safely\n'
+  failures=$((failures + 1))
+fi
+expect_content "$WORKDIR/target/Dock/desktoppicture.db" "legacy wallpaper data" || failures=$((failures + 1))
+
+# An unrelated symlink must never be removed by the migration.
+mkdir -p "$WORKDIR/unrelated/Dock"
+ln -s "$WORKDIR/unrelated/Dock" "$WORKDIR/source/UnexpectedDock"
+if RemoveManagedFolderRedirect "$WORKDIR/source/UnexpectedDock" "$WORKDIR/target/Dock" "Dock"; then
+  printf 'FAIL migration: unexpected Dock symlink was accepted\n'
+  failures=$((failures + 1))
+elif [ -L "$WORKDIR/source/UnexpectedDock" ]; then
+  printf 'PASS migration: unexpected Dock symlink left untouched\n'
+else
+  printf 'FAIL migration: unexpected Dock symlink was removed\n'
+  failures=$((failures + 1))
+fi
+
 if [ "$failures" -gt 0 ]; then
   printf '\n%s application redirection harness check(s) failed.\n' "$failures"
   exit 1
