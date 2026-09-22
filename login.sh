@@ -1,11 +1,11 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 ####################################################################################
 # Script to handle folder redirections and permissions for student & staff logins. #
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-05-20-1630"
+SCRIPT_VERSION="2026-09-22-1535"
 CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
 SYNCLOG="${GMS_SYNCLOG:-/tmp/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
@@ -275,6 +275,53 @@ CheckFolderPath() {
   return 0
 }
 
+# Merge any data retained by an earlier redirection attempt.
+MergeRedirectStaging() {
+  local folder="$1"
+  local remote_path="$2"
+  local staging_base="$3"
+  local stage_root=""
+  local staged_path=""
+  local merge_failed=0
+  local nullglob_was_set=0
+  local stage_roots=()
+
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  stage_roots=("$staging_base/${folder}."*)
+  if [ "$nullglob_was_set" -eq 0 ]; then
+    shopt -u nullglob
+  fi
+
+  for stage_root in "${stage_roots[@]-}"; do
+    [ -n "$stage_root" ] || continue
+    staged_path="$stage_root/$folder"
+    if [[ "$(basename "$stage_root")" != ${folder}.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]] ||
+       [ ! -d "$stage_root" ] || [ -L "$stage_root" ] ||
+       [ ! -d "$staged_path" ] || [ -L "$staged_path" ]; then
+      WriteToLogs "Warning: Retained staging area $stage_root does not contain the expected $folder folder; it was left untouched."
+      merge_failed=1
+      continue
+    fi
+
+    WriteToLogs "Merging retained local contents from $staged_path into $remote_path; newest file wins and destination-only files are preserved."
+    if RunRsyncWithNotifier "$staged_path/" "$remote_path/"; then
+      if rm -rf "$stage_root" && [ ! -e "$stage_root" ]; then
+        WriteToLogs "Merged retained contents for $folder and removed $stage_root."
+      else
+        WriteToLogs "Warning: Merge succeeded for $folder, but duplicate staged data could not be removed from $stage_root."
+        merge_failed=1
+      fi
+    else
+      WriteToLogs "CRITICAL: Merge failed for $folder; retained local data remains at $staged_path."
+      merge_failed=1
+    fi
+  done
+
+  rmdir "$staging_base" 2>/dev/null || true
+  return "$merge_failed"
+}
+
 # Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount() {
   StartFunctionLog
@@ -315,6 +362,7 @@ RedirectIfADAccount() {
     local staged_path=""
     local current_target=""
     local previous_symlink_target=""
+    local link_ready=0
 
     if ! mkdir -p "$remote_path"; then
       WriteToLogs "Warning: Could not create remote folder $remote_path; remaining redirections skipped."
@@ -326,16 +374,16 @@ RedirectIfADAccount() {
       current_target=$(readlink "$local_path")
       if [ "$current_target" = "$remote_path" ]; then
         WriteToLogs "$local_path already redirects to $remote_path; no change needed."
-        continue
+        link_ready=1
+      else
+        if ! rm "$local_path"; then
+          WriteToLogs "Warning: Could not remove incorrect symlink $local_path -> $current_target; remaining redirections skipped."
+          EndFunctionLog
+          return 1
+        fi
+        previous_symlink_target="$current_target"
+        WriteToLogs "Removed incorrect symlink $local_path -> $current_target."
       fi
-
-      if ! rm "$local_path"; then
-        WriteToLogs "Warning: Could not remove incorrect symlink $local_path -> $current_target; remaining redirections skipped."
-        EndFunctionLog
-        return 1
-      fi
-      previous_symlink_target="$current_target"
-      WriteToLogs "Removed incorrect symlink $local_path -> $current_target."
     elif [ -d "$local_path" ]; then
       if ! mkdir -p "$staging_base"; then
         WriteToLogs "Warning: Could not create local staging directory $staging_base; remaining redirections skipped."
@@ -366,7 +414,7 @@ RedirectIfADAccount() {
       return 1
     fi
 
-    if ! ln -s "$remote_path" "$local_path"; then
+    if [ "$link_ready" -eq 0 ] && ! ln -s "$remote_path" "$local_path"; then
       WriteToLogs "Warning: Could not create symlink $local_path -> $remote_path."
       if [ -n "$staged_path" ] && [ -d "$staged_path" ] && [ ! -e "$local_path" ]; then
         if mv "$staged_path" "$local_path"; then
@@ -386,22 +434,14 @@ RedirectIfADAccount() {
       EndFunctionLog
       return 1
     fi
-    WriteToLogs "Created symlink $local_path -> $remote_path."
+    if [ "$link_ready" -eq 0 ]; then
+      WriteToLogs "Created symlink $local_path -> $remote_path."
+    fi
 
-    if [ -n "$staged_path" ] && [ -d "$staged_path" ]; then
-      WriteToLogs "Merging staged local contents into $remote_path; newest file wins and destination-only files are preserved."
-      if RunRsyncWithNotifier "$staged_path/" "$remote_path/"; then
-        if rm -rf "$stage_root" && [ ! -e "$stage_root" ]; then
-          rmdir "$staging_base" 2>/dev/null || true
-          WriteToLogs "Merged staged contents for $folder and removed its staging area."
-        else
-          WriteToLogs "Warning: Merge succeeded for $folder, but duplicate staged data could not be removed from $stage_root."
-        fi
-      else
-        WriteToLogs "CRITICAL: Merge failed for $folder; retained local data remains at $staged_path."
-        EndFunctionLog
-        return 1
-      fi
+    if ! MergeRedirectStaging "$folder" "$remote_path" "$staging_base"; then
+      WriteToLogs "Warning: One or more retained staging areas for $folder could not be fully recovered."
+      EndFunctionLog
+      return 1
     fi
   done
 
@@ -498,6 +538,124 @@ CreateDocumentLibraryFolders() {
   EndFunctionLog
 }
 
+# Replace an application data folder with a symlink without discarding existing data.
+RedirectAppFolderSafely() {
+  local source_path="$1"
+  local target_path="$2"
+  local label="$3"
+  local source_parent="$(dirname "$source_path")"
+  local source_name="$(basename "$source_path")"
+  local staging_base="$source_parent/.gvsd_app_redirect_staging"
+  local current_target=""
+  local previous_symlink_target=""
+  local stage_root=""
+  local staged_path=""
+  local link_ready=0
+  local merge_failed=0
+  local nullglob_was_set=0
+  local stage_roots=()
+
+  if ! mkdir -p "$target_path"; then
+    WriteToLogs "Warning: Could not create $label target $target_path; redirection skipped."
+    return 1
+  fi
+
+  if [ -L "$source_path" ]; then
+    current_target=$(readlink "$source_path")
+    if [ "$current_target" = "$target_path" ]; then
+      WriteToLogs "$label symlink already correct: $source_path -> $target_path."
+      link_ready=1
+    else
+      if ! rm "$source_path"; then
+        WriteToLogs "Warning: Could not remove incorrect $label symlink $source_path -> $current_target."
+        return 1
+      fi
+      previous_symlink_target="$current_target"
+      WriteToLogs "Removed incorrect $label symlink $source_path -> $current_target."
+    fi
+  elif [ -d "$source_path" ]; then
+    if ! mkdir -p "$staging_base"; then
+      WriteToLogs "Warning: Could not create $label staging directory $staging_base."
+      return 1
+    fi
+    chmod 700 "$staging_base" 2>/dev/null || true
+    chown "$CurrentUSER" "$staging_base" 2>/dev/null || true
+
+    stage_root=$(mktemp -d "$staging_base/${source_name}.XXXXXX" 2>/dev/null)
+    if [ -z "$stage_root" ] || [ ! -d "$stage_root" ]; then
+      WriteToLogs "Warning: Could not create a staging area for $source_path."
+      return 1
+    fi
+    staged_path="$stage_root/$source_name"
+
+    if ! mv "$source_path" "$staged_path"; then
+      WriteToLogs "Warning: Could not stage existing $label folder $source_path; it was left in place."
+      rmdir "$stage_root" 2>/dev/null || true
+      rmdir "$staging_base" 2>/dev/null || true
+      return 1
+    fi
+    WriteToLogs "Staged existing $label folder $source_path at $staged_path."
+  elif [ -e "$source_path" ]; then
+    WriteToLogs "Warning: $label path $source_path is not a directory or symlink; it was left untouched."
+    return 1
+  fi
+
+  if [ "$link_ready" -eq 0 ]; then
+    if ! ln -s "$target_path" "$source_path"; then
+      WriteToLogs "Warning: Could not create $label symlink $source_path -> $target_path."
+      if [ -n "$staged_path" ] && [ -d "$staged_path" ] && [ ! -e "$source_path" ]; then
+        if mv "$staged_path" "$source_path"; then
+          WriteToLogs "Restored the staged $label folder to $source_path."
+          rmdir "$stage_root" 2>/dev/null || true
+          rmdir "$staging_base" 2>/dev/null || true
+        else
+          WriteToLogs "CRITICAL: Could not restore $label; retained data remains at $staged_path."
+        fi
+      elif [ -n "$previous_symlink_target" ] && [ ! -e "$source_path" ]; then
+        if ln -s "$previous_symlink_target" "$source_path"; then
+          WriteToLogs "Restored previous $label symlink $source_path -> $previous_symlink_target."
+        else
+          WriteToLogs "Warning: Could not restore previous $label symlink $source_path -> $previous_symlink_target."
+        fi
+      fi
+      return 1
+    fi
+    WriteToLogs "Created $label symlink $source_path -> $target_path."
+  fi
+
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  stage_roots=("$staging_base/${source_name}."*)
+  [ "$nullglob_was_set" -eq 0 ] && shopt -u nullglob
+
+  for stage_root in "${stage_roots[@]-}"; do
+    [ -n "$stage_root" ] || continue
+    staged_path="$stage_root/$source_name"
+    if [[ "$(basename "$stage_root")" != ${source_name}.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]] ||
+       [ ! -d "$stage_root" ] || [ -L "$stage_root" ] ||
+       [ ! -d "$staged_path" ] || [ -L "$staged_path" ]; then
+      WriteToLogs "Warning: Suspicious $label staging area $stage_root was left untouched."
+      continue
+    fi
+
+    WriteToLogs "Merging retained $label contents from $staged_path into $target_path; newest file wins."
+    if RunRsyncWithNotifier "$staged_path/" "$target_path/"; then
+      if rm -rf "$stage_root" && [ ! -e "$stage_root" ]; then
+        WriteToLogs "Merged retained $label contents and removed $stage_root."
+      else
+        WriteToLogs "Warning: $label merge succeeded, but duplicate staging data remains at $stage_root."
+        merge_failed=1
+      fi
+    else
+      WriteToLogs "CRITICAL: $label merge failed; retained data remains at $staged_path."
+      merge_failed=1
+    fi
+  done
+
+  rmdir "$staging_base" 2>/dev/null || true
+  return "$merge_failed"
+}
+
 LinkLibraryFolders() {
   StartFunctionLog
   
@@ -531,22 +689,10 @@ LinkLibraryFolders() {
   local appSubfolders=("Dock" "iMovie")
   
   for x in "${appSubfolders[@]}"; do
-    if [ ! -d "/Users/$CurrentUSER/Documents/Application Support/$x" ]; then
-      WriteToLogs "$x not available, creating..."
-      mkdir -p "/Users/$CurrentUSER/Documents/Application Support/$x" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Documents/Application Support/$x"
-      chown "$CurrentUSER" "/Users/$CurrentUSER/Documents/Application Support/$x"
-    else
-      WriteToLogs "$x already available"
-    fi
-    
-    # Safely rebuild symlink
-    WriteToLogs "Rebuilding Application Support symlink for $x"
-    if [ -L "/Users/$CurrentUSER/Library/Application Support/$x" ]; then
-      rm "/Users/$CurrentUSER/Library/Application Support/$x"
-    elif [ -d "/Users/$CurrentUSER/Library/Application Support/$x" ]; then
-      rm -r "/Users/$CurrentUSER/Library/Application Support/$x"
-    fi
-    ln -s "/Users/$CurrentUSER/Documents/Application Support/$x" "/Users/$CurrentUSER/Library/Application Support/$x" || WriteToLogs "Failed to create symlink for $x"
+    RedirectAppFolderSafely \
+      "/Users/$CurrentUSER/Library/Application Support/$x" \
+      "/Users/$CurrentUSER/Documents/Application Support/$x" \
+      "$x" || WriteToLogs "Warning: $x redirection was not completed."
   done
   
   EndFunctionLog
@@ -559,47 +705,13 @@ LinkTwineFolders() {
   local twine_target="/Users/$CurrentUSER/Twine"
   local twine_link="/Users/$CurrentUSER/Documents/Twine"
 
-  # Ensure target exists
-  if mkdir -p "$twine_target"; then
-    WriteToLogs "Ensured directory exists: $twine_target"
-  else
-    WriteToLogs "Error: Failed to create directory $twine_target"
+  if ! RedirectAppFolderSafely "$twine_link" "$twine_target" "Twine"; then
+    WriteToLogs "Warning: Twine redirection was not completed."
     EndFunctionLog
     return 1
   fi
 
-  # Set ownership
-  if chown "$CurrentUSER" "$twine_target"; then
-    WriteToLogs "Set ownership of $twine_target to $CurrentUSER"
-  else
-    WriteToLogs "Warning: Failed to set ownership of $twine_target"
-  fi
-
-  # Check if link already exists and is correct
-  if [ -L "$twine_link" ]; then
-    current_target=$(readlink "$twine_link")
-    if [ "$current_target" = "$twine_target" ]; then
-      WriteToLogs "Symlink already in place: $twine_link → $twine_target"
-      EndFunctionLog
-      return 0
-    else
-      WriteToLogs "Removing incorrect symlink: $twine_link → $current_target"
-      rm "$twine_link"
-    fi
-  elif [ -e "$twine_link" ]; then
-    # Exists but is not a symlink (file or directory)
-    WriteToLogs "Removing existing non-symlink item at $twine_link"
-    rm -rf "$twine_link"
-  fi
-
-  # Create new symlink
-  if ln -s "$twine_target" "$twine_link"; then
-    WriteToLogs "Created symlink: $twine_link → $twine_target"
-  else
-    WriteToLogs "Error: Failed to create symlink at $twine_link"
-    EndFunctionLog
-    return 1
-  fi
+  chown "$CurrentUSER" "$twine_target" 2>/dev/null || WriteToLogs "Warning: Failed to set ownership of $twine_target"
 
   EndFunctionLog
 }

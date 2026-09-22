@@ -55,6 +55,19 @@ printf 'remote only\n' > "$REMOTE_HOME/Pictures/remote-only.txt"
 
 ln -s "$REMOTE_HOME/Desktop" "$LOCAL_HOME/Desktop"
 
+# A previous login may have created the symlink but failed before merging its
+# retained local data. Verify a later login retries that merge automatically.
+mkdir -p "$LOCAL_HOME/.gvsd_redirect_staging/Desktop.ABC123/Desktop"
+printf 'retained only\n' > "$LOCAL_HOME/.gvsd_redirect_staging/Desktop.ABC123/Desktop/retained-only.txt"
+printf 'newer retained\n' > "$LOCAL_HOME/.gvsd_redirect_staging/Desktop.ABC123/Desktop/retained-newer.txt"
+printf 'older remote\n' > "$REMOTE_HOME/Desktop/retained-newer.txt"
+touch -t 202605010000 "$LOCAL_HOME/.gvsd_redirect_staging/Desktop.ABC123/Desktop/retained-newer.txt"
+touch -t 202604010000 "$REMOTE_HOME/Desktop/retained-newer.txt"
+printf 'older retained\n' > "$LOCAL_HOME/.gvsd_redirect_staging/Desktop.ABC123/Desktop/remote-stays-newer.txt"
+printf 'newer remote\n' > "$REMOTE_HOME/Desktop/remote-stays-newer.txt"
+touch -t 202601010000 "$LOCAL_HOME/.gvsd_redirect_staging/Desktop.ABC123/Desktop/remote-stays-newer.txt"
+touch -t 202606010000 "$REMOTE_HOME/Desktop/remote-stays-newer.txt"
+
 GMS_CURRENT_USER="$CURRENT_USER"
 GMS_USERS_BASE_DIR="$USERS_DIR"
 GMS_SYNCLOG="$LOG"
@@ -102,6 +115,9 @@ expect_content "$REMOTE_HOME/Documents/local-newer.txt" "newer local" || failure
 expect_content "$REMOTE_HOME/Documents/local-only.txt" "local only" || failures=$((failures + 1))
 expect_content "$REMOTE_HOME/Pictures/remote-newer.txt" "newer remote" || failures=$((failures + 1))
 expect_content "$REMOTE_HOME/Pictures/remote-only.txt" "remote only" || failures=$((failures + 1))
+expect_content "$REMOTE_HOME/Desktop/retained-only.txt" "retained only" || failures=$((failures + 1))
+expect_content "$REMOTE_HOME/Desktop/retained-newer.txt" "newer retained" || failures=$((failures + 1))
+expect_content "$REMOTE_HOME/Desktop/remote-stays-newer.txt" "newer remote" || failures=$((failures + 1))
 
 if [ ! -e "$LOCAL_HOME/.gvsd_redirect_staging" ]; then
   printf 'PASS cleanup: staging directory removed\n'
