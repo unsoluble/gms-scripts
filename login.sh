@@ -167,45 +167,199 @@ CheckADUserType() {
 
 CheckFolderPath() {
   local userType="$1"
-  local unescapedDir=$(mount | grep -i $1 | grep "mounted by ${CurrentUSER}" | grep -v "nobrowse" | awk -F ' on ' '{print $2}' | awk '{print $1}')
-  MYHOMEDIR="$unescapedDir/$CurrentUSER"
-  WriteToLogs "Detected mountpoint is $MYHOMEDIR"
+  local retries="${GMS_MOUNT_RETRIES:-12}"
+  local retry_delay="${GMS_MOUNT_RETRY_DELAY_SECONDS:-5}"
+  local mount_matches=""
+  local match_count=0
+  local mountpoint=""
+
+  MYHOMEDIR=""
+
+  while [ "$retries" -gt 0 ]; do
+    mount_matches=$(mount | awk -v share="$userType" -v user="$CurrentUSER" '
+      BEGIN {
+        share = tolower(share)
+        user = tolower(user)
+      }
+      {
+        lower_line = tolower($0)
+        if (index(lower_line, share) > 0 &&
+            index(lower_line, "mounted by " user) > 0 &&
+            index(lower_line, "nobrowse") == 0) {
+          mountpoint = $0
+          sub(/^.* on /, "", mountpoint)
+          sub(/ \(.*/, "", mountpoint)
+          print mountpoint
+        }
+      }
+    ')
+    match_count=$(printf '%s\n' "$mount_matches" | awk 'NF { count++ } END { print count + 0 }')
+
+    if [ "$match_count" -eq 1 ]; then
+      mountpoint="$mount_matches"
+      break
+    fi
+
+    if [ "$match_count" -gt 1 ]; then
+      WriteToLogs "Warning: Found $match_count possible $userType mountpoints for $CurrentUSER; redirection will be skipped."
+      return 1
+    fi
+
+    retries=$((retries - 1))
+    if [ "$retries" -gt 0 ]; then
+      WriteToLogs "Network mount for $userType user not available yet; retrying in ${retry_delay}s ($retries retries left)."
+      sleep "$retry_delay"
+    fi
+  done
+
+  if [ -z "$mountpoint" ] || [ ! -d "$mountpoint" ]; then
+    WriteToLogs "Warning: Unable to identify an available $userType network mount for $CurrentUSER."
+    return 1
+  fi
+
+  MYHOMEDIR="$mountpoint/$CurrentUSER"
+  if [ ! -d "$MYHOMEDIR" ] && ! mkdir -p "$MYHOMEDIR"; then
+    WriteToLogs "Warning: Unable to access or create network home $MYHOMEDIR."
+    MYHOMEDIR=""
+    return 1
+  fi
+
+  WriteToLogs "Detected unique network home: $MYHOMEDIR"
+  return 0
 }
 
 # Redirect folders in the local home directory to the remote home.
 RedirectIfADAccount() {
   StartFunctionLog
-  WriteToLogs "Redirecting folders to $MYHOMEDIR for $CurrentUSER"
-  
-  local retries=12
-  
-  # Retry loop for ensuring the remote home directory is mounted
-  while [ $retries -gt 0 ]; do
-    if [ -d "$MYHOMEDIR" ]; then
-      WriteToLogs "$MYHOMEDIR is mounted"
-      
-      local folders=("Pictures" "Documents" "Downloads" "Desktop")
-      for i in "${folders[@]}"; do
-        # Ensure the folder exists in the remote directory
-        mkdir -p "$MYHOMEDIR/$i"
-        
-        # Rebuild symlink safely
-        rm -rf "/Users/$CurrentUSER/$i"
-        ln -s "$MYHOMEDIR/$i" "/Users/$CurrentUSER/$i"
-      done
-      
+  local local_home="$USERS_BASE_DIR/$CurrentUSER"
+  local staging_base="$local_home/.gvsd_redirect_staging"
+  local write_test=""
+  local folders=("Pictures" "Documents" "Downloads" "Desktop")
+  local folder=""
+
+  if [ -z "$MYHOMEDIR" ] || [ "$MYHOMEDIR" = "/" ] || [ ! -d "$MYHOMEDIR" ]; then
+    WriteToLogs "Warning: Network home is unavailable or unsafe; folder redirection skipped."
+    EndFunctionLog
+    return 1
+  fi
+
+  case "$MYHOMEDIR" in
+    "$USERS_BASE_DIR"|"$USERS_BASE_DIR"/*)
+      WriteToLogs "Warning: Refusing to redirect into local users path $MYHOMEDIR."
       EndFunctionLog
-      return 0 # Success
-    else
-      WriteToLogs "$MYHOMEDIR not available yet, waiting... ($retries retries left)"
-      sleep 5
-      ((retries--))
+      return 1
+      ;;
+  esac
+
+  write_test=$(mktemp "$MYHOMEDIR/.gvsd_login_write_test.XXXXXX" 2>/dev/null)
+  if [ -z "$write_test" ] || [ ! -f "$write_test" ]; then
+    WriteToLogs "Warning: Network home $MYHOMEDIR is not writable; folder redirection skipped."
+    EndFunctionLog
+    return 1
+  fi
+  rm -f "$write_test"
+
+  WriteToLogs "Redirecting local folders to writable network home $MYHOMEDIR for $CurrentUSER."
+
+  for folder in "${folders[@]}"; do
+    local local_path="$local_home/$folder"
+    local remote_path="$MYHOMEDIR/$folder"
+    local stage_root=""
+    local staged_path=""
+    local current_target=""
+    local previous_symlink_target=""
+
+    if ! mkdir -p "$remote_path"; then
+      WriteToLogs "Warning: Could not create remote folder $remote_path; remaining redirections skipped."
+      EndFunctionLog
+      return 1
+    fi
+
+    if [ -L "$local_path" ]; then
+      current_target=$(readlink "$local_path")
+      if [ "$current_target" = "$remote_path" ]; then
+        WriteToLogs "$local_path already redirects to $remote_path; no change needed."
+        continue
+      fi
+
+      if ! rm "$local_path"; then
+        WriteToLogs "Warning: Could not remove incorrect symlink $local_path -> $current_target; remaining redirections skipped."
+        EndFunctionLog
+        return 1
+      fi
+      previous_symlink_target="$current_target"
+      WriteToLogs "Removed incorrect symlink $local_path -> $current_target."
+    elif [ -d "$local_path" ]; then
+      if ! mkdir -p "$staging_base"; then
+        WriteToLogs "Warning: Could not create local staging directory $staging_base; remaining redirections skipped."
+        EndFunctionLog
+        return 1
+      fi
+      chmod 700 "$staging_base" 2>/dev/null || true
+      chown "$CurrentUSER" "$staging_base" 2>/dev/null || true
+
+      stage_root=$(mktemp -d "$staging_base/${folder}.XXXXXX" 2>/dev/null)
+      if [ -z "$stage_root" ] || [ ! -d "$stage_root" ]; then
+        WriteToLogs "Warning: Could not create staging area for $local_path; remaining redirections skipped."
+        EndFunctionLog
+        return 1
+      fi
+      staged_path="$stage_root/$folder"
+
+      if ! mv "$local_path" "$staged_path"; then
+        WriteToLogs "Warning: Could not stage $local_path; original folder left in place."
+        rmdir "$stage_root" 2>/dev/null || true
+        EndFunctionLog
+        return 1
+      fi
+      WriteToLogs "Staged existing local folder $local_path at $staged_path."
+    elif [ -e "$local_path" ]; then
+      WriteToLogs "Warning: $local_path exists but is not a directory or symlink; it was left untouched and remaining redirections were skipped."
+      EndFunctionLog
+      return 1
+    fi
+
+    if ! ln -s "$remote_path" "$local_path"; then
+      WriteToLogs "Warning: Could not create symlink $local_path -> $remote_path."
+      if [ -n "$staged_path" ] && [ -d "$staged_path" ] && [ ! -e "$local_path" ]; then
+        if mv "$staged_path" "$local_path"; then
+          WriteToLogs "Restored staged local folder to $local_path."
+          rmdir "$stage_root" 2>/dev/null || true
+          rmdir "$staging_base" 2>/dev/null || true
+        else
+          WriteToLogs "CRITICAL: Could not restore $local_path; retained data remains at $staged_path."
+        fi
+      elif [ -n "$previous_symlink_target" ] && [ ! -e "$local_path" ]; then
+        if ln -s "$previous_symlink_target" "$local_path"; then
+          WriteToLogs "Restored previous symlink $local_path -> $previous_symlink_target."
+        else
+          WriteToLogs "Warning: Could not restore previous symlink $local_path -> $previous_symlink_target."
+        fi
+      fi
+      EndFunctionLog
+      return 1
+    fi
+    WriteToLogs "Created symlink $local_path -> $remote_path."
+
+    if [ -n "$staged_path" ] && [ -d "$staged_path" ]; then
+      WriteToLogs "Merging staged local contents into $remote_path; newest file wins and destination-only files are preserved."
+      if rsync -avzu "$staged_path/" "$remote_path/"; then
+        if rm -rf "$stage_root" && [ ! -e "$stage_root" ]; then
+          rmdir "$staging_base" 2>/dev/null || true
+          WriteToLogs "Merged staged contents for $folder and removed its staging area."
+        else
+          WriteToLogs "Warning: Merge succeeded for $folder, but duplicate staged data could not be removed from $stage_root."
+        fi
+      else
+        WriteToLogs "CRITICAL: Merge failed for $folder; retained local data remains at $staged_path."
+        EndFunctionLog
+        return 1
+      fi
     fi
   done
 
-  WriteToLogs "CRITICAL: Failed to detect $MYHOMEDIR. Aborting redirections to prevent local data corruption."
   EndFunctionLog
-  return 1 # Failure
+  return 0
 }
 
 # Replace the default pinned Sidebar folders with new shortcuts.
@@ -719,7 +873,9 @@ display_progress() {
   Notifier_Process=$(pgrep "IBM Notifier")
   
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
-    CheckFolderPath "$ADUser"
+    if ! CheckFolderPath "$ADUser"; then
+      WriteToLogs "Warning: Network home detection failed; redirection will be skipped."
+    fi
   else
     WriteToLogs "Unknown ADUser value: $ADUser" 
   fi
@@ -727,18 +883,21 @@ display_progress() {
   WriteToLogs "Home Folder is $MYHOMEDIR"
   
   if RedirectIfADAccount; then
-    PinRedirectedFolders
-    CreateDocumentLibraryFolders
-    LinkLibraryFolders
-    LinkTwineFolders
-    FixLibraryPerms
-    if ! SyncFiles; then
-      WriteToLogs "Warning: One or more login sync operations failed; login will continue."
+    if ! PinRedirectedFolders; then
+      WriteToLogs "Warning: Sidebar favorites could not be updated; login will continue."
     fi
-    WriteToLogs "Login script complete."
   else
-    WriteToLogs "ERROR: Setup aborted due to missing network home."
+    WriteToLogs "Warning: Folder redirection was skipped or incomplete; sidebar updates were skipped."
   fi
+
+  CreateDocumentLibraryFolders
+  LinkLibraryFolders
+  LinkTwineFolders
+  FixLibraryPerms
+  if ! SyncFiles; then
+    WriteToLogs "Warning: One or more login sync operations failed; login will continue."
+  fi
+  WriteToLogs "Login script complete."
   
   # Tell the progress UI to close, and clean up.
   echo -n "/percent 100" >&3
