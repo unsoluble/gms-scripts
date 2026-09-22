@@ -10,6 +10,7 @@ CURRENT_USER="123redirect"
 LOCAL_HOME="$USERS_DIR/$CURRENT_USER"
 REMOTE_HOME="$REMOTE_ROOT/$CURRENT_USER"
 LOG="$WORKDIR/LibrarySync.log"
+NOTIFIER_OUTPUT="$WORKDIR/notifier_commands.txt"
 
 expect_link() {
   local path="$1"
@@ -88,7 +89,9 @@ else
   exit 1
 fi
 
+exec 3> "$NOTIFIER_OUTPUT"
 RedirectIfADAccount
+exec 3>&-
 
 failures=0
 for folder in Pictures Documents Downloads Desktop; do
@@ -104,6 +107,13 @@ if [ ! -e "$LOCAL_HOME/.gvsd_redirect_staging" ]; then
   printf 'PASS cleanup: staging directory removed\n'
 else
   printf 'FAIL cleanup: staging directory remains at %s\n' "$LOCAL_HOME/.gvsd_redirect_staging"
+  failures=$((failures + 1))
+fi
+
+if grep -q '^/bottom_message Syncing: ' "$NOTIFIER_OUTPUT"; then
+  printf 'PASS notifier: filename progress commands emitted\n'
+else
+  printf 'FAIL notifier: no filename progress commands found\n'
   failures=$((failures + 1))
 fi
 

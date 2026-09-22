@@ -48,6 +48,55 @@ WriteToLogs() {
   echo "$now - $message"
 }
 
+# Keep progress messages readable while retaining useful path context.
+ShortenPathForDisplay() {
+  local path="${1%/}"
+  local filename="${path##*/}"
+  local parent="${path%/*}"
+  local display="$filename"
+
+  if [ "$parent" != "$path" ]; then
+    display="${parent##*/}/$filename"
+  fi
+
+  if [ "${#display}" -gt 72 ]; then
+    display="...${display: -69}"
+  fi
+
+  printf '%s' "$display"
+}
+
+NotifyBottomMessage() {
+  local message="${1//$'\n'/ }"
+
+  if [ -e /dev/fd/3 ]; then
+    printf '/bottom_message %s\n' "$message" >&3 2>/dev/null || true
+  fi
+}
+
+# Run rsync while preserving its exit status and streaming filenames to Notifier.
+RunRsyncWithNotifier() {
+  local source="$1"
+  local destination="$2"
+  local line=""
+  local relative_path=""
+  local short_path=""
+
+  rsync -avzu --out-format='RSYNC_FILE:%n' "$source" "$destination" 2>&1 |
+    while IFS= read -r line; do
+      WriteToLogs "rsync: $line"
+      case "$line" in
+        RSYNC_FILE:*)
+          relative_path="${line#RSYNC_FILE:}"
+          short_path=$(ShortenPathForDisplay "$relative_path")
+          NotifyBottomMessage "Syncing: $short_path"
+          ;;
+      esac
+    done
+
+  return "${PIPESTATUS[0]}"
+}
+
 InitializeLoginScript() {
   # Set up the progress UI pipe only when the script is run directly.
   rm -f "/tmp/${PIPE_NAME}"
@@ -70,9 +119,7 @@ InitializeLoginScript() {
 StartFunctionLog() {
   FUNC_START_TIME=$(date +%s)
   WriteToLogs "### Started ${FUNCNAME[1]} function" # FUNCNAME[1] is the name of the calling function
-  if [ -e /dev/fd/3 ]; then
-    echo -n "/bottom_message Starting ${FUNCNAME[1]}..." >&3
-  fi
+  NotifyBottomMessage "Starting ${FUNCNAME[1]}..."
 }
 
 # Log the end of a function and its total duration.
@@ -343,7 +390,7 @@ RedirectIfADAccount() {
 
     if [ -n "$staged_path" ] && [ -d "$staged_path" ]; then
       WriteToLogs "Merging staged local contents into $remote_path; newest file wins and destination-only files are preserved."
-      if rsync -avzu "$staged_path/" "$remote_path/"; then
+      if RunRsyncWithNotifier "$staged_path/" "$remote_path/"; then
         if rm -rf "$stage_root" && [ ! -e "$stage_root" ]; then
           rmdir "$staging_base" 2>/dev/null || true
           WriteToLogs "Merged staged contents for $folder and removed its staging area."
@@ -607,7 +654,7 @@ SyncFiles() {
       fi
 
       WriteToLogs "Syncing $name with newest-file-wins behavior; destination-only files will be preserved."
-      if rsync -avzu "$src/" "$dest/"; then
+      if RunRsyncWithNotifier "$src/" "$dest/"; then
         WriteToLogs "Successfully synced $name from $src to $dest."
       else
         WriteToLogs "Error syncing $name from $src to $dest."
@@ -627,7 +674,7 @@ SyncFiles() {
   for file in "${files[@]}"; do
     if [ -e "$srcBase/$file" ]; then
       WriteToLogs "Syncing $file with newest-file-wins behavior; destination-only files will be preserved."
-      if rsync -avzu "$srcBase/$file" "$destBase/"; then
+      if RunRsyncWithNotifier "$srcBase/$file" "$destBase/"; then
         WriteToLogs "Successfully synced $file from $srcBase to $destBase."
       else
         WriteToLogs "Error syncing $file from $srcBase to $destBase."
@@ -868,9 +915,7 @@ display_progress() {
     -accessory_view_type "${PROG_ACCESSORY_TYPE}" \
     -timeout "${PROG_TIMEOUT_SECONDS}" \
     -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "/tmp/${PIPE_NAME}" &
-  
-  # Store the Notifier UI process ID so we can kill it later.
-  Notifier_Process=$(pgrep "IBM Notifier")
+  Notifier_Process=$!
   
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
     if ! CheckFolderPath "$ADUser"; then
@@ -900,7 +945,7 @@ display_progress() {
   WriteToLogs "Login script complete."
   
   # Tell the progress UI to close, and clean up.
-  echo -n "/percent 100" >&3
+  printf '/percent 100\n' >&3
   exec 3>&-
   rm -f "/tmp/${PIPE_NAME}"
   

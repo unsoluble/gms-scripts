@@ -51,6 +51,13 @@ PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
 PROG_TIMEOUT_SECONDS=300
 PROG_MAIN_BUTTON="Cancel"
 
+# Variables for sync failure dialogs.
+ERROR_BAR_TITLE="Files Not Saved"
+ERROR_MAIN_BUTTON="OK"
+
+Notifier_Process=""
+SYNC_PERMISSION_DENIED=0
+
 # Set up a temporary pipe for the sync progress window.
 PIPE_NAME="notif_${$}"
 PIPE_PATH="/tmp/${PIPE_NAME}"
@@ -64,6 +71,44 @@ trap 'rm -f "${PIPE_PATH}"; exec 3>&- 2>/dev/null || true' EXIT
 #############
 # Functions #
 #############
+
+shorten_path() {
+  local path="${1%/}"
+  local filename="${path##*/}"
+  local parent="${path%/*}"
+  local display="$filename"
+
+  if [ "$parent" != "$path" ]; then
+    display="${parent##*/}/${filename}"
+  fi
+
+  if [ "${#display}" -gt 72 ]; then
+    display="...${display: -69}"
+  fi
+
+  printf '%s' "$display"
+}
+
+notify_bottom_message() {
+  local message="${1//$'\n'/ }"
+  printf '/bottom_message %s\n' "$message" >&3 2>/dev/null || true
+}
+
+contains_permission_denial() {
+  printf '%s\n' "$1" | grep -Eiq 'operation not permitted|permission denied|access denied'
+}
+
+display_sync_error() {
+  local message="$1"
+
+  "${APP_PATH}" \
+    -type "popup" \
+    -bar_title "${ERROR_BAR_TITLE}" \
+    -title "${message}" \
+    -icon_path "${ICON_PATH}" \
+    -main_button_label "${ERROR_MAIN_BUTTON}" \
+    -always_on_top
+}
 
 # Pop a dialog confirming the intent to log out.
 confirm_logout() {
@@ -86,15 +131,32 @@ perform_rsync() {
   local SOURCE_DIR="$1"
   local DEST_DIR="$2"
   local source_path="${SOURCE_DIR%/}"
+  local source_probe=""
+  local source_probe_status=0
+  local destination_error=""
+  local output_dir=""
+  local output_pipe=""
 
-  if [ ! -e "${source_path}" ]; then
+  source_probe=$(ls -ld "${source_path}" 2>&1)
+  source_probe_status=$?
+  if [ "${source_probe_status}" -ne 0 ]; then
+    if contains_permission_denial "${source_probe}"; then
+      SYNC_PERMISSION_DENIED=1
+      echo "$(date +"%Y-%m-%d %H:%M:%S") -- Permission denied while accessing source ${SOURCE_DIR}: ${source_probe}" >> "${RSYNC_LOG}"
+      return 77
+    fi
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- Source does not exist; skipping ${SOURCE_DIR}" >> "${RSYNC_LOG}"
     return 0
   fi
 
   # Ensure destination exists (create the destination directory, not only its parent).
-  if ! mkdir -p "${DEST_DIR}"; then
-    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Failed to create destination ${DEST_DIR}" >> "${RSYNC_LOG}"
+  destination_error=$(mkdir -p "${DEST_DIR}" 2>&1)
+  if [ "$?" -ne 0 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Failed to create destination ${DEST_DIR}: ${destination_error}" >> "${RSYNC_LOG}"
+    if contains_permission_denial "${destination_error}"; then
+      SYNC_PERMISSION_DENIED=1
+      return 77
+    fi
     return 1
   fi
   if ! mkdir -p "$(dirname "${RSYNC_LOG}")"; then
@@ -106,26 +168,36 @@ perform_rsync() {
   echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync start for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
   echo "$(date +"%Y-%m-%d %H:%M:%S") -- Newest file wins; destination-only files will be preserved" >> "${RSYNC_LOG}"
 
-  # Start rsync in the background, capture its PID.
-  rsync -avzu "${SOURCE_DIR}" "${DEST_DIR}" >> "${RSYNC_LOG}" 2>&1 &
+  output_dir=$(mktemp -d "/tmp/gms_logout_rsync.${$}.XXXXXX") || return 1
+  output_pipe="${output_dir}/output"
+  if ! mkfifo "${output_pipe}"; then
+    rmdir "${output_dir}" 2>/dev/null || true
+    return 1
+  fi
+
+  # Capture rsync output directly so fast transfers cannot outrun the UI observer.
+  {
+    while IFS= read -r line; do
+      printf '%s\n' "${line}" >> "${RSYNC_LOG}"
+      case "${line}" in
+        RSYNC_FILE:*)
+          filename="${line#RSYNC_FILE:}"
+          shortname=$(shorten_path "${filename}")
+          notify_bottom_message "Syncing: ${shortname}"
+          ;;
+      esac
+    done < "${output_pipe}"
+  } &
+  local output_pid=$!
+
+  # Start rsync in the background and retain its exact PID for cancellation.
+  rsync -avzu --out-format='RSYNC_FILE:%n' "${SOURCE_DIR}" "${DEST_DIR}" > "${output_pipe}" 2>&1 &
   local rsync_pid=$!
   local cancelled=0
 
-  # Start a tail that watches the logfile and pushes updates to the notifier pipe.
-  {
-    tail -n0 -F "${RSYNC_LOG}" 2>/dev/null | while IFS= read -r line; do
-      # Attempt to extract a human-friendly filename from the last rsync line.
-      latest_output=$(basename "${line}" 2>/dev/null)
-      # Send a short, stable message to the notifier (avoid spamming with long file names).
-      echo -n "/bottom_message Currently syncing files, please wait." >&3
-    done
-  } &
-  local tail_pid=$!
-
   # Monitor rsync and the notifier. If the notifier disappears, cancel the rsync.
   while kill -0 ${rsync_pid} 2>/dev/null; do
-    # Use pgrep -f to match full command line, and test its exit status.
-    if ! pgrep -f "IBM Notifier" >/dev/null 2>&1; then
+    if [ -z "${Notifier_Process}" ] || ! kill -0 "${Notifier_Process}" 2>/dev/null; then
       echo "$(date +"%Y-%m-%d %H:%M:%S") -- Notifier closed; cancelling rsync ${rsync_pid}" >> "${RSYNC_LOG}"
       kill -TERM "${rsync_pid}" 2>/dev/null || true
       cancelled=1
@@ -137,8 +209,14 @@ perform_rsync() {
   wait ${rsync_pid} 2>/dev/null
   local rsync_status=$?
 
-  # Clean up the tail process.
-  kill ${tail_pid} 2>/dev/null || true
+  # Let the output reader drain before inspecting the log for permission failures.
+  wait ${output_pid} 2>/dev/null || true
+  rm -f "${output_pipe}"
+  rmdir "${output_dir}" 2>/dev/null || true
+
+  if grep -Eiq 'operation not permitted|permission denied|access denied' "${RSYNC_LOG}"; then
+    SYNC_PERMISSION_DENIED=1
+  fi
 
   if [ "${cancelled}" -eq 1 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync cancelled for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
@@ -147,6 +225,9 @@ perform_rsync() {
 
   if [ "${rsync_status}" -ne 0 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync failed for ${SOURCE_DIR}; rsync status ${rsync_status}" >> "${RSYNC_LOG}"
+    if [ "${SYNC_PERMISSION_DENIED}" -eq 1 ]; then
+      return 77
+    fi
     return "${rsync_status}"
   fi
 
@@ -158,6 +239,7 @@ perform_rsync() {
 display_progress() {
   local sync_failed=0
   local sync_cancelled=0
+  local permission_denied=0
   local destination=""
   local sync_status=0
 
@@ -172,8 +254,9 @@ display_progress() {
     -main_button_label "${PROG_MAIN_BUTTON}" \
     -timeout "${PROG_TIMEOUT_SECONDS}" \
     -always_on_top < "${PIPE_PATH}" &
+  Notifier_Process=$!
 
-  # Give the notifier a short moment to start so pgrep sees it.
+  # Give the notifier a short moment to start before monitoring its exact PID.
   sleep 0.25
 
   # Run a sync for each of the listed source/destination pairs.
@@ -182,6 +265,10 @@ display_progress() {
     perform_rsync "${source}" "${destination}"
     sync_status=$?
 
+    if [ "${sync_status}" -eq 77 ]; then
+      permission_denied=1
+      break
+    fi
     if [ "${sync_status}" -eq 130 ]; then
       sync_cancelled=1
       break
@@ -192,12 +279,18 @@ display_progress() {
   done
 
   # Tell the progress UI to close, and clean up.
-  echo -n "end" >&3
+  printf 'end\n' >&3
   exec 3>&-
   rm -f "${PIPE_PATH}"
+  wait "${Notifier_Process}" 2>/dev/null || true
+  Notifier_Process=""
   # Remove the trap cleanup since we've already cleaned up here.
   trap - EXIT
 
+  if [ "${permission_denied}" -eq 1 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- File access permission was denied; logout stopped" >> "${RSYNC_LOG}"
+    return 77
+  fi
   if [ "${sync_cancelled}" -eq 1 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- Save & Log Out cancelled during sync" >> "${RSYNC_LOG}"
     return 130
@@ -224,6 +317,11 @@ if [ "${continue_choice}" -eq 0 ] || [ "${continue_choice}" -eq 4 ]; then
   sync_status=$?
 
   if [ "${sync_status}" -ne 0 ]; then
+    if [ "${sync_status}" -eq 77 ]; then
+      display_sync_error "Your files were NOT saved because file access was denied. Do not log out or shut down. Ask your teacher for help."
+    elif [ "${sync_status}" -ne 130 ]; then
+      display_sync_error "Your files were NOT saved. Do not log out or shut down. Ask your teacher for help."
+    fi
     echo "Save failed or was cancelled. Logout stopped; see ${RSYNC_LOG} for details."
     exit "${sync_status}"
   fi
