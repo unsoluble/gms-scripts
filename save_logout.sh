@@ -318,9 +318,9 @@ if [ "${continue_choice}" -eq 0 ] || [ "${continue_choice}" -eq 4 ]; then
 
   if [ "${sync_status}" -ne 0 ]; then
     if [ "${sync_status}" -eq 77 ]; then
-      display_sync_error "Your files were NOT saved because file access was denied. Do not log out or shut down. Ask your teacher for help."
+      display_sync_error "Your files were NOT saved because file access was denied. Do not log out. Ask your teacher for help."
     elif [ "${sync_status}" -ne 130 ]; then
-      display_sync_error "Your files were NOT saved. Do not log out or shut down. Ask your teacher for help."
+      display_sync_error "Your files were NOT saved. Do not log out. Ask your teacher for help."
     fi
     echo "Save failed or was cancelled. Logout stopped; see ${RSYNC_LOG} for details."
     exit "${sync_status}"

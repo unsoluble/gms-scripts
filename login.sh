@@ -706,10 +706,37 @@ DeleteOldLocalHomes() {
   local base_dir="$USERS_BASE_DIR"
   local size_threshold_kb="$LOCAL_CONTENT_SIZE_THRESHOLD_KB"
   local now_epoch=$(date +%s)
+  local user_entries=()
+  local dotglob_was_set=0
+  local nullglob_was_set=0
 
-  for dir in "$base_dir"/*; do
-    # Skip symlinks and non-directories.
-    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+  CLEANUP_HOMES_DELETED_KB=0
+  CLEANUP_FOLDERS_PRUNED_KB=0
+
+  if [ ! -d "$base_dir" ]; then
+    WriteToLogs "Warning: Local users directory $base_dir does not exist; cleanup skipped."
+    EndFunctionLog
+    return 1
+  fi
+
+  shopt -q dotglob && dotglob_was_set=1
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s dotglob nullglob
+  user_entries=("$base_dir"/*)
+  [ "$dotglob_was_set" -eq 0 ] && shopt -u dotglob
+  [ "$nullglob_was_set" -eq 0 ] && shopt -u nullglob
+
+  for dir in "${user_entries[@]}"; do
+
+    if [ -L "$dir" ]; then
+      WriteToLogs "Skipping $dir: local users entry is a symlink."
+      continue
+    fi
+    if [ ! -d "$dir" ]; then
+      WriteToLogs "Skipping $dir: local users entry is not a directory."
+      continue
+    fi
+
     local username=$(basename "$dir")
     local age_days=""
     local age_source=""
@@ -733,7 +760,7 @@ DeleteOldLocalHomes() {
 
     if [ "$age_status" -eq 2 ]; then
       WriteToLogs "$username: delete unstamped local home; no login stamp exists."
-      RemoveLocalPath "$username" "$dir" "unstamped local home"
+      RemoveLocalPath "$username" "$dir" "unstamped local home" "home"
       continue
     fi
 
@@ -749,10 +776,10 @@ DeleteOldLocalHomes() {
 
     WriteToLogs "Age signal for $username: source=$age_source; timestamp=$age_timestamp; age=${age_days} days."
 
-    # If the user has not logged in for 120 days, wipe the whole local home.
+    # If the user has not logged in for the configured old-age threshold, wipe the whole local home.
     if [ "$age_days" -ge "$OLD_AGE_THRESHOLD" ]; then
       WriteToLogs "$username: delete stale local home; age ${age_days} days meets $OLD_AGE_THRESHOLD day threshold."
-      RemoveLocalPath "$username" "$dir" "local home"
+      RemoveLocalPath "$username" "$dir" "local home" "home"
       continue
     fi
 
@@ -764,6 +791,13 @@ DeleteOldLocalHomes() {
     WriteToLogs "$username: inspect high-size local content; age ${age_days} days is between $AGE_THRESHOLD and $OLD_AGE_THRESHOLD days."
     CleanLargeLocalContent "$username" "$dir" "$size_threshold_kb"
   done
+
+  if [ "${#user_entries[@]}" -eq 0 ]; then
+    WriteToLogs "No local user entries found under $base_dir."
+  fi
+
+  local total_reclaimed_kb=$((CLEANUP_HOMES_DELETED_KB + CLEANUP_FOLDERS_PRUNED_KB))
+  WriteToLogs "Cleanup summary: reclaimed $(FormatSizeKB "$total_reclaimed_kb") total ($(FormatSizeKB "$CLEANUP_HOMES_DELETED_KB") from deleted homes; $(FormatSizeKB "$CLEANUP_FOLDERS_PRUNED_KB") from pruned folders)."
 
   EndFunctionLog
 }
@@ -802,10 +836,44 @@ GetLocalHomeAge() {
   return 1
 }
 
+GetPathSizeKB() {
+  local target="$1"
+  local size_kb=""
+
+  size_kb=$(du -sk "$target" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  if [[ "$size_kb" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$size_kb"
+    return 0
+  fi
+
+  return 1
+}
+
+FormatSizeKB() {
+  local size_kb="$1"
+
+  if ! [[ "$size_kb" =~ ^[0-9]+$ ]]; then
+    printf 'unknown size'
+  elif [ "$size_kb" -ge 1048576 ]; then
+    awk -v kb="$size_kb" 'BEGIN { printf "%.1fGiB", kb / 1048576 }'
+  elif [ "$size_kb" -ge 1024 ]; then
+    awk -v kb="$size_kb" 'BEGIN { printf "%.1fMiB", kb / 1024 }'
+  else
+    printf '%sKiB' "$size_kb"
+  fi
+}
+
 RemoveLocalPath() {
   local username="$1"
   local target="$2"
   local label="$3"
+  local category="$4"
+  local target_size_kb=0
+
+  if ! target_size_kb=$(GetPathSizeKB "$target"); then
+    target_size_kb=0
+    WriteToLogs "$username: warning; could not determine size before deleting $target."
+  fi
 
   if rm -rf "$target"; then
     if [ -e "$target" ]; then
@@ -813,7 +881,16 @@ RemoveLocalPath() {
       return 1
     fi
 
-    WriteToLogs "$username: deleted $label $target."
+    case "$category" in
+      home)
+        CLEANUP_HOMES_DELETED_KB=$((CLEANUP_HOMES_DELETED_KB + target_size_kb))
+        ;;
+      prune)
+        CLEANUP_FOLDERS_PRUNED_KB=$((CLEANUP_FOLDERS_PRUNED_KB + target_size_kb))
+        ;;
+    esac
+
+    WriteToLogs "$username: deleted $label $target; reclaimed $(FormatSizeKB "$target_size_kb")."
     return 0
   fi
 
@@ -832,25 +909,26 @@ CleanLargeLocalContent() {
   )
 
   for target in "${folders_to_check[@]}"; do
+    if [ -L "$target" ]; then
+      WriteToLogs "$username: cleanup target is a symlink, skipped: $target"
+      continue
+    fi
     if [ ! -d "$target" ]; then
       WriteToLogs "$username: cleanup target missing, skipped: $target"
       continue
     fi
 
-    local folder_size_kb=$(du -sk "$target" 2>/dev/null | cut -f1)
-    if ! [[ "$folder_size_kb" =~ ^[0-9]+$ ]]; then
+    local folder_size_kb=""
+    if ! folder_size_kb=$(GetPathSizeKB "$target"); then
       WriteToLogs "$username: could not determine size for $target; skipped."
       continue
     fi
 
-    local folder_size_mb=$(( folder_size_kb / 1024 ))
-    local threshold_mb=$(( size_threshold_kb / 1024 ))
-
     if [ "$folder_size_kb" -gt "$size_threshold_kb" ]; then
-      WriteToLogs "$username: delete large local content $target (${folder_size_mb}MB > ${threshold_mb}MB)."
-      RemoveLocalPath "$username" "$target" "large local content"
+      WriteToLogs "$username: delete large local content $target ($(FormatSizeKB "$folder_size_kb") > $(FormatSizeKB "$size_threshold_kb"))."
+      RemoveLocalPath "$username" "$target" "large local content" "prune"
     else
-      WriteToLogs "$username: kept $target (${folder_size_mb}MB <= ${threshold_mb}MB)."
+      WriteToLogs "$username: kept $target ($(FormatSizeKB "$folder_size_kb") <= $(FormatSizeKB "$size_threshold_kb"))."
     fi
   done
 }

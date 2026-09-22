@@ -22,10 +22,11 @@ stamp_home() {
   local username="$1"
   local days_old="$2"
   local stamp_path="$USERS_DIR/$username/$STAMP_REL"
+  local stamp_epoch=$(( $(date +%s) - (days_old * 86400) ))
 
   mkdir -p "$(dirname "$stamp_path")"
   touch "$stamp_path"
-  touch -t "$(date -v-"$days_old"d "+%Y%m%d%H%M.%S")" "$stamp_path"
+  touch -t "$(date -r "$stamp_epoch" "+%Y%m%d%H%M.%S")" "$stamp_path"
 }
 
 add_kb_file() {
@@ -60,24 +61,59 @@ expect_missing() {
   fi
 }
 
+expect_log() {
+  local pattern="$1"
+  local label="$2"
+
+  if grep -Fq "$pattern" "$LOG"; then
+    printf 'PASS log: %s\n' "$label"
+  else
+    printf 'FAIL log missing: %s (%s)\n' "$label" "$pattern"
+    return 1
+  fi
+}
+
 rm -rf "$WORKDIR"
 mkdir -p "$USERS_DIR"
 touch "$LOG"
 
 make_home "Shared"
+make_home "helpdesk"
 make_home "$CURRENT_USER"
 make_home "100unstamped"
 make_home "101fresh"
 make_home "102stale"
 make_home "103mediumlarge"
 make_home "104mediumsmall"
+make_home "105pruneboundary"
+make_home "106deleteboundary"
+make_home "107invalidstamp"
+make_home "108deletefail"
+make_home "109symlinktarget"
 
 stamp_home "101fresh" 3
 stamp_home "102stale" 70
 stamp_home "103mediumlarge" 20
 stamp_home "104mediumsmall" 20
+stamp_home "105pruneboundary" 15
+stamp_home "106deleteboundary" 60
+stamp_home "107invalidstamp" 20
+stamp_home "108deletefail" 70
+stamp_home "109symlinktarget" 20
 
 add_kb_file "$USERS_DIR/103mediumlarge/Music/GarageBand/big.dat" 4
+add_kb_file "$USERS_DIR/105pruneboundary/Music/GarageBand/big.dat" 4
+add_kb_file "$USERS_DIR/102stale/stale.dat" 4
+add_kb_file "$USERS_DIR/106deleteboundary/stale.dat" 8
+add_kb_file "$USERS_DIR/108deletefail/must-not-count.dat" 16
+
+mkdir -p "$WORKDIR/external-cache"
+add_kb_file "$WORKDIR/external-cache/big.dat" 4
+command rm -rf "$USERS_DIR/109symlinktarget/Library/Caches"
+ln -s "$WORKDIR/external-cache" "$USERS_DIR/109symlinktarget/Library/Caches"
+ln -s "$USERS_DIR/101fresh" "$USERS_DIR/linkedhome"
+touch "$USERS_DIR/README.txt"
+touch "$USERS_DIR/.localized"
 
 GMS_CURRENT_USER="$CURRENT_USER"
 GMS_USERS_BASE_DIR="$USERS_DIR"
@@ -91,8 +127,38 @@ SANITIZED_LOGIN="$WORKDIR/login.sh"
 LC_CTYPE=C sed $'1s/^\357\273\277//' "$REPO_ROOT/login.sh" > "$SANITIZED_LOGIN"
 source "$SANITIZED_LOGIN"
 
+expected_home_reclaimed_kb=$(du -sk "$USERS_DIR/102stale" "$USERS_DIR/106deleteboundary" | awk '{ total += $1 } END { print total }')
+expected_pruned_kb=$(du -sk \
+  "$USERS_DIR/103mediumlarge/Music/GarageBand" \
+  "$USERS_DIR/105pruneboundary/Music/GarageBand" | awk '{ total += $1 } END { print total }')
+expected_home_reclaimed=$(FormatSizeKB "$expected_home_reclaimed_kb")
+expected_pruned=$(FormatSizeKB "$expected_pruned_kb")
+
 chown() {
   return 0
+}
+
+stat() {
+  local target="${!#}"
+
+  if [[ "$target" == *"/107invalidstamp/$STAMP_REL" ]]; then
+    printf 'invalid\n'
+    return 0
+  fi
+
+  command stat "$@"
+}
+
+rm() {
+  local arg=""
+
+  for arg in "$@"; do
+    if [ "$arg" = "$USERS_DIR/108deletefail" ]; then
+      return 1
+    fi
+  done
+
+  command rm "$@"
 }
 
 set +e
@@ -118,6 +184,7 @@ printf 'Log file: %s\n\n' "$LOG"
 failures=0
 
 expect_exists "$USERS_DIR/Shared" "protected Shared home" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/helpdesk" "protected helpdesk home" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/$CURRENT_USER" "active user home" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/$CURRENT_USER/$STAMP_REL" "active user login stamp" || failures=$((failures + 1))
 expect_missing "$USERS_DIR/100unstamped" "unstamped inactive home" || failures=$((failures + 1))
@@ -127,6 +194,27 @@ expect_exists "$USERS_DIR/103mediumlarge" "medium-age large-content home" || fai
 expect_missing "$USERS_DIR/103mediumlarge/Music/GarageBand" "large GarageBand content" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/104mediumsmall" "medium-age small-content home" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/104mediumsmall/Music/GarageBand" "small GarageBand content" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/105pruneboundary" "15-day boundary home" || failures=$((failures + 1))
+expect_missing "$USERS_DIR/105pruneboundary/Music/GarageBand" "large content at 15-day prune boundary" || failures=$((failures + 1))
+expect_missing "$USERS_DIR/106deleteboundary" "home at 60-day deletion boundary" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/107invalidstamp" "home with unreadable login stamp" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/108deletefail" "home retained after simulated deletion failure" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/109symlinktarget/Library/Caches" "symlink cleanup target retained" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/linkedhome" "top-level symlink retained" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/README.txt" "top-level non-directory retained" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/.localized" "hidden top-level non-directory retained" || failures=$((failures + 1))
+
+expect_log "age 15 days is between 15 and 60 days" "15-day prune boundary" || failures=$((failures + 1))
+expect_log "age 60 days meets 60 day threshold" "60-day deletion boundary" || failures=$((failures + 1))
+expect_log "could not determine a reliable age" "invalid stamp skip reason" || failures=$((failures + 1))
+expect_log "failed to delete local home $USERS_DIR/108deletefail" "deletion failure" || failures=$((failures + 1))
+expect_log "local users entry is a symlink" "top-level symlink skip reason" || failures=$((failures + 1))
+expect_log "local users entry is not a directory" "top-level non-directory skip reason" || failures=$((failures + 1))
+expect_log "Skipping $USERS_DIR/.localized: local users entry is not a directory" "hidden entry skip reason" || failures=$((failures + 1))
+expect_log "cleanup target is a symlink" "prune-target symlink skip reason" || failures=$((failures + 1))
+expect_log "Cleanup summary: reclaimed" "reclaimed-space summary" || failures=$((failures + 1))
+expect_log "$expected_home_reclaimed from deleted homes" "successful whole-home reclaimed size" || failures=$((failures + 1))
+expect_log "$expected_pruned from pruned folders" "successful prune reclaimed size" || failures=$((failures + 1))
 
 printf '\nRemaining fake homes:\n'
 find "$USERS_DIR" -maxdepth 1 -mindepth 1 -type d -print | sort
