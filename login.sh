@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-09-22-1545"
+SCRIPT_VERSION="2026-09-22-1602"
 CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
 SYNCLOG="${GMS_SYNCLOG:-/tmp/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
@@ -709,24 +709,10 @@ LinkLibraryFolders() {
   local mineFolders=("assets" "versions")
   
   for m in "${mineFolders[@]}"; do
-    if [ ! -d "/Users/Shared/minecraft/$m" ]; then
-      WriteToLogs "Shared Minecraft $m not available, creating..."
-      mkdir -p "/Users/Shared/minecraft/$m" || WriteToLogs "Failed to create directory /Users/Shared/minecraft/$m"
-    else
-      WriteToLogs "Shared Minecraft $m folder available"
-    fi
-    
-    chown -R root:staff "/Users/Shared/minecraft/$m"
-    chmod -R 777 "/Users/Shared/minecraft/$m"
-    
-    # Safely rebuild symlink
-    WriteToLogs "Rebuilding Minecraft symlink for $m"
-    if [ -L "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" ]; then
-      rm "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
-    elif [ -d "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" ]; then
-      rm -r "/Users/$CurrentUSER/Library/Application Support/minecraft/$m"
-    fi
-    ln -s "/Users/Shared/minecraft/$m" "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" || WriteToLogs "Failed to create symlink for $m"
+    RedirectAppFolderSafely \
+      "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" \
+      "/Users/Shared/minecraft/$m" \
+      "Minecraft $m" || WriteToLogs "Warning: Minecraft $m redirection was not completed."
   done
   
   RemoveManagedFolderRedirect \
@@ -766,6 +752,69 @@ LinkTwineFolders() {
 
 FixLibraryPerms() {
   StartFunctionLog
+
+  set_shared_minecraft_permissions() {
+    local cache_root="/Users/Shared/minecraft"
+
+    if [ ! -d "$cache_root" ]; then
+      WriteToLogs "Shared Minecraft cache $cache_root not found."
+      return 1
+    fi
+
+    # The cache must be writable by every lab user, but data files do not need
+    # executable bits. Normalize it before the current user launches Minecraft.
+    if ! chown -R root:wheel "$cache_root"; then
+      WriteToLogs "Warning: Could not normalize ownership for $cache_root."
+    fi
+    if ! find -P "$cache_root" -type d -exec chmod 777 {} +; then
+      WriteToLogs "Warning: Could not normalize directory permissions in $cache_root."
+      return 1
+    fi
+    if ! find -P "$cache_root" -type f -exec chmod 666 {} +; then
+      WriteToLogs "Warning: Could not normalize file permissions in $cache_root."
+      return 1
+    fi
+    chmod 1777 "$cache_root" || WriteToLogs "Warning: Could not set the sticky bit on $cache_root."
+    WriteToLogs "Shared Minecraft cache permissions normalized: writable directories, non-executable data files."
+  }
+
+  set_private_minecraft_permissions() {
+    local minecraft_home="/Users/$CurrentUSER/Library/Application Support/minecraft"
+
+    if [ ! -d "$minecraft_home" ]; then
+      WriteToLogs "Minecraft user data directory $minecraft_home not found."
+      return 1
+    fi
+
+    # Do not follow the assets or versions symlinks into the shared cache.
+    if ! find -P "$minecraft_home" \( -type d -o -type f \) -exec chown "$CurrentUSER" {} +; then
+      WriteToLogs "Warning: Could not normalize ownership in $minecraft_home."
+    fi
+    if ! find -P "$minecraft_home" \( -type d -o -type f \) -exec chmod go-rwx {} +; then
+      WriteToLogs "Warning: Could not make Minecraft user data private in $minecraft_home."
+      return 1
+    fi
+    WriteToLogs "Minecraft user data permissions restricted to $CurrentUSER without following shared-cache symlinks."
+  }
+
+  verify_minecraft_app_signature() {
+    local app_path="/Applications/Minecraft.app"
+    local signature_error=""
+
+    if [ ! -d "$app_path" ]; then
+      WriteToLogs "Warning: Minecraft application not found at $app_path."
+      return 1
+    fi
+
+    if signature_error=$(codesign --verify --deep --strict "$app_path" 2>&1); then
+      WriteToLogs "Minecraft application signature verification passed."
+      return 0
+    fi
+
+    signature_error=${signature_error//$'\n'/; }
+    WriteToLogs "Warning: Minecraft application signature verification failed: $signature_error"
+    return 1
+  }
   
   adjust_permissions() {
     local dir_path="$1"
@@ -781,9 +830,12 @@ FixLibraryPerms() {
     fi
   }
   
+    # The launcher currently requires student write access to update itself.
+    # Retain that behavior while logging signature damage for diagnosis.
     adjust_permissions "/Applications/Minecraft.app" "777"
-    adjust_permissions "/Users/Shared/minecraft" "777" "root" "wheel"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/minecraft" "777"
+    verify_minecraft_app_signature || true
+    set_shared_minecraft_permissions || true
+    set_private_minecraft_permissions || true
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
     adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "700" "$CurrentUSER"
