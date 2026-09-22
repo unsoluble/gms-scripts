@@ -85,17 +85,31 @@ confirm_logout() {
 perform_rsync() {
   local SOURCE_DIR="$1"
   local DEST_DIR="$2"
+  local source_path="${SOURCE_DIR%/}"
+
+  if [ ! -e "${source_path}" ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Source does not exist; skipping ${SOURCE_DIR}" >> "${RSYNC_LOG}"
+    return 0
+  fi
 
   # Ensure destination exists (create the destination directory, not only its parent).
-  mkdir -p "${DEST_DIR}"
-  mkdir -p "$(dirname "${RSYNC_LOG}")"
+  if ! mkdir -p "${DEST_DIR}"; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Failed to create destination ${DEST_DIR}" >> "${RSYNC_LOG}"
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "${RSYNC_LOG}")"; then
+    echo "Failed to create log directory for ${RSYNC_LOG}" >&2
+    return 1
+  fi
 
   echo "Running Save & Log Out script version ${SCRIPT_VERSION}" >> "${RSYNC_LOG}"
   echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync start for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
+  echo "$(date +"%Y-%m-%d %H:%M:%S") -- Newest file wins; destination-only files will be preserved" >> "${RSYNC_LOG}"
 
   # Start rsync in the background, capture its PID.
   rsync -avzu "${SOURCE_DIR}" "${DEST_DIR}" >> "${RSYNC_LOG}" 2>&1 &
   local rsync_pid=$!
+  local cancelled=0
 
   # Start a tail that watches the logfile and pushes updates to the notifier pipe.
   {
@@ -114,21 +128,39 @@ perform_rsync() {
     if ! pgrep -f "IBM Notifier" >/dev/null 2>&1; then
       echo "$(date +"%Y-%m-%d %H:%M:%S") -- Notifier closed; cancelling rsync ${rsync_pid}" >> "${RSYNC_LOG}"
       kill -TERM "${rsync_pid}" 2>/dev/null || true
+      cancelled=1
       break
     fi
     sleep 0.2
   done
 
-  wait ${rsync_pid} 2>/dev/null || true
+  wait ${rsync_pid} 2>/dev/null
+  local rsync_status=$?
 
   # Clean up the tail process.
   kill ${tail_pid} 2>/dev/null || true
 
+  if [ "${cancelled}" -eq 1 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync cancelled for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
+    return 130
+  fi
+
+  if [ "${rsync_status}" -ne 0 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync failed for ${SOURCE_DIR}; rsync status ${rsync_status}" >> "${RSYNC_LOG}"
+    return "${rsync_status}"
+  fi
+
   echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync complete for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
+  return 0
 }
 
 # Pop a dialog displaying an in-progress status bar for the sync, with a cancel button.
 display_progress() {
+  local sync_failed=0
+  local sync_cancelled=0
+  local destination=""
+  local sync_status=0
+
   # Launch the notifier and feed it from our fifo. Keep it backgrounded so we can do rsync work.
   "${APP_PATH}" \
     -type "popup" \
@@ -148,6 +180,15 @@ display_progress() {
   for source in "${(@k)RSYNC_PAIRS}"; do
     destination="${RSYNC_PAIRS[$source]}"
     perform_rsync "${source}" "${destination}"
+    sync_status=$?
+
+    if [ "${sync_status}" -eq 130 ]; then
+      sync_cancelled=1
+      break
+    fi
+    if [ "${sync_status}" -ne 0 ]; then
+      sync_failed=1
+    fi
   done
 
   # Tell the progress UI to close, and clean up.
@@ -156,6 +197,17 @@ display_progress() {
   rm -f "${PIPE_PATH}"
   # Remove the trap cleanup since we've already cleaned up here.
   trap - EXIT
+
+  if [ "${sync_cancelled}" -eq 1 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Save & Log Out cancelled during sync" >> "${RSYNC_LOG}"
+    return 130
+  fi
+  if [ "${sync_failed}" -eq 1 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- One or more sync operations failed; logout stopped" >> "${RSYNC_LOG}"
+    return 1
+  fi
+
+  return 0
 }
 
 #################
@@ -169,6 +221,12 @@ continue_choice=$(confirm_logout)
 if [ "${continue_choice}" -eq 0 ] || [ "${continue_choice}" -eq 4 ]; then
   rm -f "${RSYNC_LOG}"
   display_progress
+  sync_status=$?
+
+  if [ "${sync_status}" -ne 0 ]; then
+    echo "Save failed or was cancelled. Logout stopped; see ${RSYNC_LOG} for details."
+    exit "${sync_status}"
+  fi
 
   # Clear out this plist file if it still exists.
   if [ -f "${USER_HOME}/Library/Application Support/com.gvsd.LogonScriptRun.plist" ]; then

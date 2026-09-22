@@ -437,7 +437,7 @@ SyncFiles() {
 
   local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
   local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
-  local status=0
+  local sync_failures=0
 
   # Function to sync directories with checks
   sync_directory() {
@@ -446,12 +446,18 @@ SyncFiles() {
     local name=$3
 
     if [ -d "$src" ]; then
-      rsync -avz "$src/" "$dest/"
-      status=$?
-      if [ $status -eq 0 ]; then
+      if ! mkdir -p "$dest"; then
+        WriteToLogs "Error creating destination $dest for $name."
+        sync_failures=$((sync_failures + 1))
+        return
+      fi
+
+      WriteToLogs "Syncing $name with newest-file-wins behavior; destination-only files will be preserved."
+      if rsync -avzu "$src/" "$dest/"; then
         WriteToLogs "Successfully synced $name from $src to $dest."
       else
         WriteToLogs "Error syncing $name from $src to $dest."
+        sync_failures=$((sync_failures + 1))
       fi
     else
       WriteToLogs "Source directory $src for $name does not exist. Skipping."
@@ -466,7 +472,13 @@ SyncFiles() {
   local files=("launcher_accounts.json" "launcher_msa_credentials.bin" "options.txt")
   for file in "${files[@]}"; do
     if [ -e "$srcBase/$file" ]; then
-      rsync -avz "$srcBase/$file" "$destBase/"
+      WriteToLogs "Syncing $file with newest-file-wins behavior; destination-only files will be preserved."
+      if rsync -avzu "$srcBase/$file" "$destBase/"; then
+        WriteToLogs "Successfully synced $file from $srcBase to $destBase."
+      else
+        WriteToLogs "Error syncing $file from $srcBase to $destBase."
+        sync_failures=$((sync_failures + 1))
+      fi
     else
       WriteToLogs "File $srcBase/$file does not exist. Skipping."
     fi
@@ -477,6 +489,14 @@ SyncFiles() {
   sync_directory "/Users/$CurrentUSER/Documents/Sync/Twine" "/Users/$CurrentUSER/Twine" "Twine"
 
   EndFunctionLog
+
+  if [ "$sync_failures" -gt 0 ]; then
+    WriteToLogs "SyncFiles completed with $sync_failures failed sync operation(s)."
+    return 1
+  fi
+
+  WriteToLogs "SyncFiles completed successfully."
+  return 0
 }
 
 DeleteOldLocalHomes() {
@@ -712,7 +732,9 @@ display_progress() {
     LinkLibraryFolders
     LinkTwineFolders
     FixLibraryPerms
-    SyncFiles
+    if ! SyncFiles; then
+      WriteToLogs "Warning: One or more login sync operations failed; login will continue."
+    fi
     WriteToLogs "Login script complete."
   else
     WriteToLogs "ERROR: Setup aborted due to missing network home."
