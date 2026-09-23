@@ -5,10 +5,11 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-09-23-1214"
+SCRIPT_VERSION="2026-09-23-1248"
 CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
 SYNCLOG="${GMS_SYNCLOG:-/Library/Logs/GVSD/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
+LOCAL_HOME="$USERS_BASE_DIR/$CurrentUSER"
 # Age threshold for local home cleanup (days)
 AGE_THRESHOLD=15
 # Age threshold for local home deletion (days)
@@ -36,6 +37,9 @@ PROG_TIMEOUT_SECONDS=300
 PIPE_DIR=""
 PIPE_PATH=""
 Notifier_Process=""
+WORKFLOW_LOCK_PATH=""
+WORKFLOW_LOCK_OWNED=0
+LOGIN_WARNING_COUNT=0
 
 # Declare a global for the function logging routines.
 FUNC_START_TIME=""
@@ -51,6 +55,11 @@ WriteToLogs() {
   now=$(date "+%Y-%m-%d %T")
   echo "$now - $message" >> "$SYNCLOG"
   echo "$now - $message"
+}
+
+RecordLoginWarning() {
+  LOGIN_WARNING_COUNT=$((LOGIN_WARNING_COUNT + 1))
+  WriteToLogs "Warning: $1"
 }
 
 # Keep progress messages readable while retaining useful path context.
@@ -153,7 +162,7 @@ InitializeLoginScript() {
     return 1
   fi
 
-  trap CleanupLoginRuntime EXIT
+  trap 'CleanupLoginRuntime; ReleaseLoginWorkflowLock' EXIT
   trap 'exit 1' HUP INT TERM
   return 0
 }
@@ -205,6 +214,56 @@ ValidateCurrentUser() {
 
   WriteToLogs "Validated active console user $CurrentUSER with local home $local_home."
   return 0
+}
+
+AcquireLoginWorkflowLock() {
+  local local_home="$USERS_BASE_DIR/$CurrentUSER"
+  local existing_pid=""
+
+  WORKFLOW_LOCK_PATH="$local_home/Library/Application Support/.gvsd_workflow_lock"
+  mkdir -p "$(dirname "$WORKFLOW_LOCK_PATH")" || return 1
+
+  if mkdir "$WORKFLOW_LOCK_PATH" 2>/dev/null; then
+    WORKFLOW_LOCK_OWNED=1
+  else
+    if [ -L "$WORKFLOW_LOCK_PATH" ] || [ ! -d "$WORKFLOW_LOCK_PATH" ]; then
+      WriteToLogs "ERROR: Workflow lock path is unsafe: $WORKFLOW_LOCK_PATH"
+      return 1
+    fi
+
+    if [ -f "$WORKFLOW_LOCK_PATH/pid" ] && [ ! -L "$WORKFLOW_LOCK_PATH/pid" ]; then
+      existing_pid=$(cat "$WORKFLOW_LOCK_PATH/pid" 2>/dev/null)
+    fi
+    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      WriteToLogs "ERROR: Another login/logout workflow is active for $CurrentUSER with PID $existing_pid."
+      return 1
+    fi
+
+    WriteToLogs "Warning: Removing stale workflow lock for $CurrentUSER."
+    if ! rm -rf "$WORKFLOW_LOCK_PATH" || ! mkdir "$WORKFLOW_LOCK_PATH"; then
+      WriteToLogs "ERROR: Could not replace stale workflow lock $WORKFLOW_LOCK_PATH."
+      return 1
+    fi
+    WORKFLOW_LOCK_OWNED=1
+  fi
+
+  printf '%s\n' "$$" > "$WORKFLOW_LOCK_PATH/pid"
+  printf '%s\n' "login" > "$WORKFLOW_LOCK_PATH/operation"
+  chmod 700 "$WORKFLOW_LOCK_PATH" 2>/dev/null || true
+  WriteToLogs "Acquired login workflow lock for $CurrentUSER."
+  return 0
+}
+
+ReleaseLoginWorkflowLock() {
+  if [ "$WORKFLOW_LOCK_OWNED" -eq 1 ] && [ -n "$WORKFLOW_LOCK_PATH" ]; then
+    if rm -rf "$WORKFLOW_LOCK_PATH"; then
+      WriteToLogs "Released login workflow lock for $CurrentUSER."
+    else
+      WriteToLogs "Warning: Could not release workflow lock $WORKFLOW_LOCK_PATH."
+    fi
+  fi
+  WORKFLOW_LOCK_OWNED=0
+  WORKFLOW_LOCK_PATH=""
 }
 
 # Log the start of a function, and capture the time for its duration.
@@ -664,6 +723,7 @@ PinRedirectedFolders() {
 
 CreateDocumentLibraryFolders() {
   StartFunctionLog
+  local status=0
   
   # Set of folders to create
   local directories=(
@@ -688,10 +748,11 @@ CreateDocumentLibraryFolders() {
   )
   
   for dir in "${directories[@]}"; do
-    CreateFolderAndSetPermissions "/Users/$CurrentUSER/$dir" "$CurrentUSER"
+    CreateFolderAndSetPermissions "$LOCAL_HOME/$dir" "$CurrentUSER" || status=1
   done
 
   EndFunctionLog
+  return "$status"
 }
 
 # Replace an application data folder with a symlink without discarding existing data.
@@ -859,43 +920,51 @@ RemoveManagedFolderRedirect() {
 
 LinkLibraryFolders() {
   StartFunctionLog
+  local status=0
   
   # Ensure shared Minecraft directory exists
-  mkdir -p "/Users/Shared/minecraft" || WriteToLogs "Failed to create directory /Users/Shared/minecraft"
-  mkdir -p "/Users/$CurrentUSER/Library/Application Support/minecraft" || WriteToLogs "Failed to create directory /Users/$CurrentUSER/Library/Application Support/minecraft"
+  if ! mkdir -p "$USERS_BASE_DIR/Shared/minecraft"; then
+    WriteToLogs "Warning: Failed to create shared Minecraft cache directory $USERS_BASE_DIR/Shared/minecraft."
+    status=1
+  fi
+  if ! mkdir -p "$LOCAL_HOME/Library/Application Support/minecraft"; then
+    WriteToLogs "Warning: Failed to create local Minecraft directory $LOCAL_HOME/Library/Application Support/minecraft."
+    status=1
+  fi
   
   local mineFolders=("assets" "versions")
   
   for m in "${mineFolders[@]}"; do
     RedirectAppFolderSafely \
-      "/Users/$CurrentUSER/Library/Application Support/minecraft/$m" \
-      "/Users/Shared/minecraft/$m" \
-      "Minecraft $m" || WriteToLogs "Warning: Minecraft $m redirection was not completed."
+      "$LOCAL_HOME/Library/Application Support/minecraft/$m" \
+      "$USERS_BASE_DIR/Shared/minecraft/$m" \
+      "Minecraft $m" || status=1
   done
   
   RemoveManagedFolderRedirect \
-    "/Users/$CurrentUSER/Library/Application Support/Dock" \
-    "/Users/$CurrentUSER/Documents/Application Support/Dock" \
-    "Dock" || WriteToLogs "Warning: Legacy Dock redirection cleanup was not completed."
+    "$LOCAL_HOME/Library/Application Support/Dock" \
+    "$LOCAL_HOME/Documents/Application Support/Dock" \
+    "Dock" || status=1
 
   local appSubfolders=("iMovie")
   
   for x in "${appSubfolders[@]}"; do
     RedirectAppFolderSafely \
-      "/Users/$CurrentUSER/Library/Application Support/$x" \
-      "/Users/$CurrentUSER/Documents/Application Support/$x" \
-      "$x" || WriteToLogs "Warning: $x redirection was not completed."
+      "$LOCAL_HOME/Library/Application Support/$x" \
+      "$LOCAL_HOME/Documents/Application Support/$x" \
+      "$x" || status=1
   done
   
   EndFunctionLog
+  return "$status"
 }
 
 
 LinkTwineFolders() {
   StartFunctionLog
 
-  local twine_target="/Users/$CurrentUSER/Twine"
-  local twine_link="/Users/$CurrentUSER/Documents/Twine"
+  local twine_target="$LOCAL_HOME/Twine"
+  local twine_link="$LOCAL_HOME/Documents/Twine"
 
   if ! RedirectAppFolderSafely "$twine_link" "$twine_target" "Twine"; then
     WriteToLogs "Warning: Twine redirection was not completed."
@@ -910,9 +979,10 @@ LinkTwineFolders() {
 
 FixLibraryPerms() {
   StartFunctionLog
+  local status=0
 
   set_shared_minecraft_permissions() {
-    local cache_root="/Users/Shared/minecraft"
+    local cache_root="$USERS_BASE_DIR/Shared/minecraft"
 
     if [ ! -d "$cache_root" ]; then
       WriteToLogs "Shared Minecraft cache $cache_root not found."
@@ -937,7 +1007,7 @@ FixLibraryPerms() {
   }
 
   set_private_minecraft_permissions() {
-    local minecraft_home="/Users/$CurrentUSER/Library/Application Support/minecraft"
+    local minecraft_home="$LOCAL_HOME/Library/Application Support/minecraft"
 
     if [ ! -d "$minecraft_home" ]; then
       WriteToLogs "Minecraft user data directory $minecraft_home not found."
@@ -978,36 +1048,47 @@ FixLibraryPerms() {
     local dir_path="$1"
     local desired_perm="$2"
     local owner="$3"
-    local group="$4"
   
     if [ -d "$dir_path" ]; then
-      [ -n "$owner" ] && chown -R "$owner:$group" "$dir_path" && WriteToLogs "Set ownership for $dir_path"
-      chmod -R "$desired_perm" "$dir_path" && WriteToLogs "Set permissions for $dir_path"
+      if [ -n "$owner" ]; then
+        chown -R "$owner" "$dir_path" || return 1
+        WriteToLogs "Set ownership for $dir_path"
+      fi
+      if [ "$desired_perm" = "700" ]; then
+        find -P "$dir_path" -type d -exec chmod 700 {} + || return 1
+        find -P "$dir_path" -type f -exec chmod 600 {} + || return 1
+        WriteToLogs "Set private directory/file permissions for $dir_path (700/600)"
+      else
+        chmod -R "$desired_perm" "$dir_path" || return 1
+        WriteToLogs "Set permissions for $dir_path"
+      fi
     else
       WriteToLogs "Directory $dir_path not found"
+      return 1
     fi
   }
   
     # The launcher currently requires student write access to update itself.
     # Retain that behavior while logging signature damage for diagnosis.
-    adjust_permissions "/Applications/Minecraft.app" "777"
-    verify_minecraft_app_signature || true
-    set_shared_minecraft_permissions || true
-    set_private_minecraft_permissions || true
-    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft" "700" "$CurrentUSER"
-    adjust_permissions "/Users/$CurrentUSER/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER"
-    adjust_permissions "/Users/$CurrentUSER/Music/Audio Music Apps" "700" "$CurrentUSER"
-    adjust_permissions "/Users/$CurrentUSER/Music/GarageBand" "700" "$CurrentUSER"
-    adjust_permissions "/Users/$CurrentUSER/Library/Application Support/Google" "700" "$CurrentUSER"
+    adjust_permissions "/Applications/Minecraft.app" "777" || status=1
+    verify_minecraft_app_signature || status=1
+    set_shared_minecraft_permissions || status=1
+    set_private_minecraft_permissions || status=1
+    adjust_permissions "$LOCAL_HOME/Documents/Application Support/minecraft" "700" "$CurrentUSER" || status=1
+    adjust_permissions "$LOCAL_HOME/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER" || status=1
+    adjust_permissions "$LOCAL_HOME/Music/Audio Music Apps" "700" "$CurrentUSER" || status=1
+    adjust_permissions "$LOCAL_HOME/Music/GarageBand" "700" "$CurrentUSER" || status=1
+    adjust_permissions "$LOCAL_HOME/Library/Application Support/Google" "700" "$CurrentUSER" || status=1
   
   EndFunctionLog
+  return "$status"
 }
 
 SyncFiles() {
   StartFunctionLog
 
-  local srcBase="/Users/$CurrentUSER/Documents/Application Support/minecraft"
-  local destBase="/Users/$CurrentUSER/Library/Application Support/minecraft"
+  local srcBase="$LOCAL_HOME/Documents/Application Support/minecraft"
+  local destBase="$LOCAL_HOME/Library/Application Support/minecraft"
   local sync_failures=0
 
   # Function to sync directories with checks
@@ -1056,8 +1137,8 @@ SyncFiles() {
   done
 
   # Sync GarageBand and Twine folders
-  sync_directory "/Users/$CurrentUSER/Documents/GarageBand" "/Users/$CurrentUSER/Music/GarageBand" "GarageBand"
-  sync_directory "/Users/$CurrentUSER/Documents/Sync/Twine" "/Users/$CurrentUSER/Twine" "Twine"
+  sync_directory "$LOCAL_HOME/Documents/GarageBand" "$LOCAL_HOME/Music/GarageBand" "GarageBand"
+  sync_directory "$LOCAL_HOME/Documents/Sync/Twine" "$LOCAL_HOME/Twine" "Twine"
 
   EndFunctionLog
 
@@ -1127,6 +1208,11 @@ DeleteOldLocalHomes() {
       continue
     fi
 
+    if IsLocalOnlyAccount "$username"; then
+      WriteToLogs "$username: skipped local-only account; automatic student-home cleanup does not apply."
+      continue
+    fi
+
     GetLocalHomeAge "$dir" "$now_epoch"
     local age_status=$?
 
@@ -1178,6 +1264,19 @@ IsProtectedLocalHome() {
   local username="$1"
 
   [[ "$username" =~ ^(Shared|Guest|admin|helpdesk|jweston|\.localized)$ ]]
+}
+
+IsLocalOnlyAccount() {
+  local username="$1"
+  local auth_authority=""
+
+  # A missing directory-service record is treated as an abandoned network home,
+  # while an existing record without AD metadata is a persistent local account.
+  if ! dscl . -read "/Users/$username" >/dev/null 2>&1; then
+    return 1
+  fi
+  auth_authority=$(dscl . -read "/Users/$username" OriginalAuthenticationAuthority 2>/dev/null || true)
+  [ -z "$auth_authority" ]
 }
 
 GetLocalHomeAge() {
@@ -1322,7 +1421,8 @@ UpdateCurrentLoginStamp() {
   fi
 
   if mkdir -p "$marker_dir" && touch "$marker_path"; then
-    chown "$CurrentUSER" "$marker_path" 2>/dev/null || WriteToLogs "Warning: could not set owner on $marker_path"
+    chown "$CurrentUSER" "$marker_dir" "$marker_path" 2>/dev/null || WriteToLogs "Warning: could not set owner on $marker_dir and its login stamp"
+    chmod 600 "$marker_path" 2>/dev/null || WriteToLogs "Warning: could not set permissions on $marker_path"
     WriteToLogs "Updated local login stamp for $CurrentUSER at $marker_path."
   else
     WriteToLogs "ERROR: Failed to update local login stamp for $CurrentUSER at $marker_path."
@@ -1383,7 +1483,7 @@ display_progress() {
   
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
     if ! CheckFolderPath "$ADUser"; then
-      WriteToLogs "Warning: Network home detection failed; redirection will be skipped."
+      RecordLoginWarning "Network home detection failed; redirection will be skipped."
     fi
   else
     WriteToLogs "Unknown ADUser value: $ADUser" 
@@ -1394,24 +1494,22 @@ display_progress() {
   if RedirectIfADAccount; then
     if WriteRedirectState; then
       if ! PinRedirectedFolders; then
-        WriteToLogs "Warning: Sidebar favorites could not be updated; login will continue."
+        RecordLoginWarning "Sidebar favorites could not be updated; login will continue."
       fi
     else
-      WriteToLogs "Warning: Folder links could not be verified; no successful redirection state was recorded."
+      RecordLoginWarning "Folder links could not be verified; no successful redirection state was recorded."
     fi
   else
-    WriteToLogs "Warning: Folder redirection was skipped or incomplete; sidebar updates were skipped."
+    RecordLoginWarning "Folder redirection was skipped or incomplete; sidebar updates were skipped."
   fi
 
-  CreateDocumentLibraryFolders
-  LinkLibraryFolders
-  LinkTwineFolders
-  FixLibraryPerms
+  CreateDocumentLibraryFolders || RecordLoginWarning "One or more required local folders could not be prepared."
+  LinkLibraryFolders || RecordLoginWarning "One or more application-data links could not be prepared."
+  LinkTwineFolders || RecordLoginWarning "Twine folder linking was incomplete."
+  FixLibraryPerms || RecordLoginWarning "One or more permission corrections were incomplete."
   if ! SyncFiles; then
-    WriteToLogs "Warning: One or more login sync operations failed; login will continue."
+    RecordLoginWarning "One or more login sync operations failed; login will continue."
   fi
-  WriteToLogs "Login script complete."
-  
   # Tell the progress UI to close, and clean up.
   printf '/percent 100\n' >&3
   CleanupLoginRuntime
@@ -1425,14 +1523,23 @@ main() {
   if ! ValidateCurrentUser; then
     return 1
   fi
+  if ! AcquireLoginWorkflowLock; then
+    return 1
+  fi
 
   # Do the main sequence, wrapped by the progress UI.
   # Delete the stale local homes after the UI has closed, as we don't need to watch it.
   if ! display_progress; then
     return 1
   fi
-  DeleteOldLocalHomes
-  UpdateCurrentLoginStamp
+  DeleteOldLocalHomes || RecordLoginWarning "Local-home cleanup did not complete normally."
+  UpdateCurrentLoginStamp || RecordLoginWarning "The current user's login stamp could not be updated."
+
+  if [ "$LOGIN_WARNING_COUNT" -gt 0 ]; then
+    WriteToLogs "Login script complete with $LOGIN_WARNING_COUNT warning condition(s); review preceding warning entries."
+  else
+    WriteToLogs "Login script complete with no warning conditions."
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

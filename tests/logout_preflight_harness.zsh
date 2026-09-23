@@ -41,6 +41,30 @@ else
   failures=$((failures + 1))
 fi
 
+if acquire_logout_workflow_lock; then
+  print 'PASS lock: logout workflow lock acquired'
+else
+  print 'FAIL lock: logout workflow lock could not be acquired'
+  failures=$((failures + 1))
+fi
+if acquire_logout_workflow_lock; then
+  print 'FAIL lock: duplicate logout workflow lock acquired'
+  failures=$((failures + 1))
+else
+  print 'PASS lock: duplicate logout workflow rejected'
+fi
+release_logout_workflow_lock
+
+mkdir -p "${WORKFLOW_LOCK_PATH}"
+print '999999' > "${WORKFLOW_LOCK_PATH}/pid"
+if acquire_logout_workflow_lock; then
+  print 'PASS lock: stale logout workflow lock replaced'
+  release_logout_workflow_lock
+else
+  print 'FAIL lock: stale logout workflow lock not replaced'
+  failures=$((failures + 1))
+fi
+
 rm -f "$USER_DIR/Documents"
 mkdir "$USER_DIR/Documents"
 if validate_managed_redirections; then

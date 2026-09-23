@@ -31,6 +31,19 @@ else
   failures=$((failures + 1))
 fi
 
+if AcquireLoginWorkflowLock; then
+  printf 'PASS lock: login workflow lock acquired\n'
+else
+  printf 'FAIL lock: login workflow lock could not be acquired\n'
+  failures=$((failures + 1))
+fi
+if AcquireLoginWorkflowLock; then
+  printf 'FAIL lock: duplicate login workflow lock acquired\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS lock: overlapping workflow rejected\n'
+fi
+
 if [ -p "$PIPE_PATH" ] && [[ "$PIPE_PATH" == /tmp/gvsd-login.*/notifier.pipe ]]; then
   printf 'PASS fifo: unique secure runtime path created\n'
 else
@@ -55,6 +68,7 @@ else
 fi
 
 CleanupLoginRuntime
+ReleaseLoginWorkflowLock
 trap - EXIT HUP INT TERM
 if [ ! -e "$runtime_dir" ]; then
   printf 'PASS cleanup: runtime FIFO and directory removed\n'

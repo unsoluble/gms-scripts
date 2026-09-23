@@ -90,6 +90,7 @@ make_home "106deleteboundary"
 make_home "107invalidstamp"
 make_home "108deletefail"
 make_home "109symlinktarget"
+make_home "110localaccount"
 
 stamp_home "101fresh" 3
 stamp_home "102stale" 70
@@ -136,6 +137,14 @@ expected_pruned=$(FormatSizeKB "$expected_pruned_kb")
 
 chown() {
   return 0
+}
+
+dscl() {
+  if [[ "$*" == *"/Users/110localaccount"* ]] && [[ "$*" != *"OriginalAuthenticationAuthority"* ]]; then
+    printf 'RecordName: 110localaccount\n'
+    return 0
+  fi
+  return 1
 }
 
 stat() {
@@ -200,6 +209,7 @@ expect_missing "$USERS_DIR/106deleteboundary" "home at 60-day deletion boundary"
 expect_exists "$USERS_DIR/107invalidstamp" "home with unreadable login stamp" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/108deletefail" "home retained after simulated deletion failure" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/109symlinktarget/Library/Caches" "symlink cleanup target retained" || failures=$((failures + 1))
+expect_exists "$USERS_DIR/110localaccount" "local-only account home retained" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/linkedhome" "top-level symlink retained" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/README.txt" "top-level non-directory retained" || failures=$((failures + 1))
 expect_exists "$USERS_DIR/.localized" "hidden top-level non-directory retained" || failures=$((failures + 1))
@@ -212,6 +222,7 @@ expect_log "local users entry is a symlink" "top-level symlink skip reason" || f
 expect_log "local users entry is not a directory" "top-level non-directory skip reason" || failures=$((failures + 1))
 expect_log "Skipping $USERS_DIR/.localized: local users entry is not a directory" "hidden entry skip reason" || failures=$((failures + 1))
 expect_log "cleanup target is a symlink" "prune-target symlink skip reason" || failures=$((failures + 1))
+expect_log "110localaccount: skipped local-only account" "local-only account skip reason" || failures=$((failures + 1))
 expect_log "Cleanup summary: reclaimed" "reclaimed-space summary" || failures=$((failures + 1))
 expect_log "$expected_home_reclaimed from deleted homes" "successful whole-home reclaimed size" || failures=$((failures + 1))
 expect_log "$expected_pruned from pruned folders" "successful prune reclaimed size" || failures=$((failures + 1))

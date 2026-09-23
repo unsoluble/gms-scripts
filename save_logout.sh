@@ -4,7 +4,7 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
-SCRIPT_VERSION="2026-09-23-1214"
+SCRIPT_VERSION="2026-09-23-1248"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
 
 # Determine ConsoleUser (the logged-in user) and that user's home directory.
@@ -50,7 +50,6 @@ PROG_ACCESSORY_TYPE="progressbar"
 PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
                         /user_interruption_allowed true \
                         /exit_on_completion true"
-PROG_TIMEOUT_SECONDS=300
 PROG_MAIN_BUTTON="Cancel"
 
 # Variables for sync failure dialogs.
@@ -62,6 +61,8 @@ SYNC_PERMISSION_DENIED=0
 
 PIPE_DIR=""
 PIPE_PATH=""
+WORKFLOW_LOCK_PATH="${USER_HOME}/Library/Application Support/.gvsd_workflow_lock"
+WORKFLOW_LOCK_OWNED=0
 
 #############
 # Functions #
@@ -86,6 +87,11 @@ cleanup_logout_runtime() {
   PIPE_DIR=""
 }
 
+cleanup_logout_all() {
+  cleanup_logout_runtime
+  release_logout_workflow_lock
+}
+
 initialize_logout_runtime() {
   PIPE_DIR=$(mktemp -d "/tmp/gvsd-logout.XXXXXX") || return 1
   if ! chmod 700 "${PIPE_DIR}"; then
@@ -98,7 +104,7 @@ initialize_logout_runtime() {
     return 1
   fi
 
-  trap cleanup_logout_runtime EXIT
+  trap cleanup_logout_all EXIT
   trap 'exit 1' HUP INT TERM
   return 0
 }
@@ -128,6 +134,46 @@ validate_logout_user() {
   fi
 
   return 0
+}
+
+acquire_logout_workflow_lock() {
+  local existing_pid=""
+
+  if [ -L "${WORKFLOW_LOCK_PATH}" ]; then
+    echo "Unsafe workflow lock path ${WORKFLOW_LOCK_PATH}." >&2
+    return 1
+  fi
+
+  if ! mkdir "${WORKFLOW_LOCK_PATH}" 2>/dev/null; then
+    if [ ! -d "${WORKFLOW_LOCK_PATH}" ]; then
+      echo "Unsafe workflow lock path ${WORKFLOW_LOCK_PATH}." >&2
+      return 1
+    fi
+    if [ -f "${WORKFLOW_LOCK_PATH}/pid" ] && [ ! -L "${WORKFLOW_LOCK_PATH}/pid" ]; then
+      existing_pid=$(<"${WORKFLOW_LOCK_PATH}/pid")
+    fi
+    if [[ "${existing_pid}" == <-> ]] && kill -0 "${existing_pid}" 2>/dev/null; then
+      echo "Another login or logout workflow is already active for ${CurrentUSER}." >&2
+      return 1
+    fi
+    if ! rm -rf "${WORKFLOW_LOCK_PATH}" || ! mkdir "${WORKFLOW_LOCK_PATH}"; then
+      echo "A stale workflow lock could not be replaced for ${CurrentUSER}." >&2
+      return 1
+    fi
+  fi
+
+  WORKFLOW_LOCK_OWNED=1
+  printf '%s\n' "$$" > "${WORKFLOW_LOCK_PATH}/pid"
+  printf '%s\n' "logout" > "${WORKFLOW_LOCK_PATH}/operation"
+  chmod 700 "${WORKFLOW_LOCK_PATH}" 2>/dev/null || true
+  return 0
+}
+
+release_logout_workflow_lock() {
+  if [ "${WORKFLOW_LOCK_OWNED}" -eq 1 ] && [ -n "${WORKFLOW_LOCK_PATH}" ]; then
+    rm -rf "${WORKFLOW_LOCK_PATH}" 2>/dev/null || true
+  fi
+  WORKFLOW_LOCK_OWNED=0
 }
 
 validate_managed_redirections() {
@@ -252,6 +298,8 @@ perform_rsync() {
   local destination_error=""
   local output_dir=""
   local output_pipe=""
+  local notifier_status=0
+  local notifier_failed=0
 
   source_probe=$(ls -ld "${source_path}" 2>&1)
   source_probe_status=$?
@@ -312,21 +360,33 @@ perform_rsync() {
   local cancelled=0
 
   # Monitor rsync and the notifier. If the notifier disappears, cancel the rsync.
-  while kill -0 ${rsync_pid} 2>/dev/null; do
+  while kill -0 "${rsync_pid}" 2>/dev/null; do
     if [ -z "${Notifier_Process}" ] || ! kill -0 "${Notifier_Process}" 2>/dev/null; then
-      echo "$(date +"%Y-%m-%d %H:%M:%S") -- Notifier closed; cancelling rsync ${rsync_pid}" >> "${RSYNC_LOG}"
+      if [ -n "${Notifier_Process}" ]; then
+        wait "${Notifier_Process}" 2>/dev/null
+        notifier_status=$?
+      else
+        notifier_status=125
+      fi
+      Notifier_Process=""
       kill -TERM "${rsync_pid}" 2>/dev/null || true
-      cancelled=1
+      if [ "${notifier_status}" -eq 0 ]; then
+        echo "$(date +"%Y-%m-%d %H:%M:%S") -- User cancelled Save & Log Out; stopping rsync ${rsync_pid}" >> "${RSYNC_LOG}"
+        cancelled=1
+      else
+        echo "$(date +"%Y-%m-%d %H:%M:%S") -- Notifier exited unexpectedly with status ${notifier_status}; stopping rsync ${rsync_pid}" >> "${RSYNC_LOG}"
+        notifier_failed=1
+      fi
       break
     fi
     sleep 0.2
   done
 
-  wait ${rsync_pid} 2>/dev/null
+  wait "${rsync_pid}" 2>/dev/null
   local rsync_status=$?
 
   # Let the output reader drain before inspecting the log for permission failures.
-  wait ${output_pid} 2>/dev/null || true
+  wait "${output_pid}" 2>/dev/null || true
   rm -f "${output_pipe}"
   rmdir "${output_dir}" 2>/dev/null || true
 
@@ -337,6 +397,11 @@ perform_rsync() {
   if [ "${cancelled}" -eq 1 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- Sync cancelled for ${SOURCE_DIR}" >> "${RSYNC_LOG}"
     return 130
+  fi
+
+  if [ "${notifier_failed}" -eq 1 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Save UI failed; logout stopped" >> "${RSYNC_LOG}"
+    return 125
   fi
 
   if [ "${rsync_status}" -ne 0 ]; then
@@ -356,6 +421,7 @@ display_progress() {
   local sync_failed=0
   local sync_cancelled=0
   local permission_denied=0
+  local notifier_failed=0
   local destination=""
   local sync_status=0
 
@@ -368,7 +434,6 @@ display_progress() {
     -accessory_view_type "${PROG_ACCESSORY_TYPE}" \
     -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" \
     -main_button_label "${PROG_MAIN_BUTTON}" \
-    -timeout "${PROG_TIMEOUT_SECONDS}" \
     -always_on_top < "${PIPE_PATH}" &
   Notifier_Process=$!
 
@@ -389,6 +454,10 @@ display_progress() {
       sync_cancelled=1
       break
     fi
+    if [ "${sync_status}" -eq 125 ]; then
+      notifier_failed=1
+      break
+    fi
     if [ "${sync_status}" -ne 0 ]; then
       sync_failed=1
     fi
@@ -397,7 +466,9 @@ display_progress() {
   # Tell the progress UI to close, and clean up.
   printf 'end\n' >&3
   exec 3>&-
-  wait "${Notifier_Process}" 2>/dev/null || true
+  if [ -n "${Notifier_Process}" ]; then
+    wait "${Notifier_Process}" 2>/dev/null || true
+  fi
   Notifier_Process=""
   cleanup_logout_runtime
 
@@ -408,6 +479,10 @@ display_progress() {
   if [ "${sync_cancelled}" -eq 1 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- Save & Log Out cancelled during sync" >> "${RSYNC_LOG}"
     return 130
+  fi
+  if [ "${notifier_failed}" -eq 1 ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Save UI failed unexpectedly; logout stopped" >> "${RSYNC_LOG}"
+    return 125
   fi
   if [ "${sync_failed}" -eq 1 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- One or more sync operations failed; logout stopped" >> "${RSYNC_LOG}"
@@ -430,6 +505,12 @@ main() {
     display_sync_error "Your files cannot be saved because the current user could not be verified. Do not log out. Ask your teacher for help."
     return 1
   fi
+  if ! acquire_logout_workflow_lock; then
+    display_sync_error "A login or save process is already running. Do not log out. Wait a moment and try again."
+    return 1
+  fi
+  trap cleanup_logout_all EXIT
+  trap 'exit 1' HUP INT TERM
 
   continue_choice=$(confirm_logout)
   if [ "${continue_choice}" -ne 0 ] && [ "${continue_choice}" -ne 4 ]; then
