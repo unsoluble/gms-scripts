@@ -5,9 +5,9 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-09-22-1602"
+SCRIPT_VERSION="2026-09-23-1214"
 CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
-SYNCLOG="${GMS_SYNCLOG:-/tmp/LibrarySync.log}"
+SYNCLOG="${GMS_SYNCLOG:-/Library/Logs/GVSD/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
 # Age threshold for local home cleanup (days)
 AGE_THRESHOLD=15
@@ -17,6 +17,8 @@ OLD_AGE_THRESHOLD=60
 LOCAL_CONTENT_SIZE_THRESHOLD_KB="${GMS_LOCAL_CONTENT_SIZE_THRESHOLD_KB:-512000}"
 # Local marker used to record the last completed login for cleanup age checks.
 LOCAL_LOGIN_STAMP_REL="Library/Application Support/com.gvsd.LocalHomeLastLogin"
+# Local state proving that the managed home-folder links were verified at login.
+REDIRECT_STATE_REL="Library/Application Support/com.gvsd.RedirectState"
 
 # Notifier UI paths.
 APP_PATH="/Applications/IBM Notifier.app/Contents/MacOS/IBM Notifier"
@@ -30,8 +32,10 @@ PROG_ACCESSORY_PAYLOAD="/percent indeterminate \
                         /exit_on_completion true"
 PROG_TIMEOUT_SECONDS=300
 
-# Temporary pipe for the sync progress window.
-PIPE_NAME="login_pipe"
+# Runtime paths and process IDs are populated during secure initialization.
+PIPE_DIR=""
+PIPE_PATH=""
+Notifier_Process=""
 
 # Declare a global for the function logging routines.
 FUNC_START_TIME=""
@@ -43,7 +47,8 @@ FUNC_START_TIME=""
 # Logs to both the console and the global logfile.
 WriteToLogs() {
   local message="$1"
-  local now=$(date "+%Y-%m-%d %T")
+  local now=""
+  now=$(date "+%Y-%m-%d %T")
   echo "$now - $message" >> "$SYNCLOG"
   echo "$now - $message"
 }
@@ -98,21 +103,108 @@ RunRsyncWithNotifier() {
 }
 
 InitializeLoginScript() {
-  # Set up the progress UI pipe only when the script is run directly.
-  rm -f "/tmp/${PIPE_NAME}"
-  mkfifo "/tmp/${PIPE_NAME}"
-  exec 3<> "/tmp/${PIPE_NAME}"
+  local log_dir=""
+  local log_name=""
+  local archive_path=""
+
+  log_dir=$(dirname "$SYNCLOG")
+  log_name=$(basename "$SYNCLOG")
+
+  if [ -L "$log_dir" ]; then
+    echo "Refusing to use symlinked login log directory $log_dir." >&2
+    return 1
+  fi
+  if [ ! -d "$log_dir" ]; then
+    if ! mkdir -p "$log_dir" || ! chmod 755 "$log_dir"; then
+      echo "Unable to create secure login log directory $log_dir." >&2
+      return 1
+    fi
+  fi
+
+  if [ -L "$SYNCLOG" ]; then
+    echo "Refusing to use symlinked login log $SYNCLOG." >&2
+    return 1
+  fi
 
   # Rotate the logs.
   if [ -f "$SYNCLOG" ]; then
-    mv "$SYNCLOG" "/tmp/LibrarySync-$(date +%Y-%m-%d_%H-%M-%S).log"
+    archive_path="$log_dir/${log_name%.log}-$(date +%Y-%m-%d_%H-%M-%S)-$$.log"
+    if ! mv "$SYNCLOG" "$archive_path"; then
+      echo "Unable to rotate login log $SYNCLOG." >&2
+      return 1
+    fi
   fi
   # Delete archived logs older than 2 days.
-  find /tmp -name "LibrarySync-*.log" -mtime +2 -exec rm {} \;
+  find "$log_dir" -maxdepth 1 -type f -name "${log_name%.log}-*.log" -mtime +2 -exec rm {} \;
 
-  touch "$SYNCLOG"
-  chmod 777 "$SYNCLOG"
-  chmod 777 "/usr/local/ConsoleUserWarden/bin/ConsoleUserWarden-UserLoggedOut"
+  if ! (umask 022 && : > "$SYNCLOG") || ! chmod 644 "$SYNCLOG"; then
+    echo "Unable to create secure login log $SYNCLOG." >&2
+    return 1
+  fi
+
+  PIPE_DIR=$(mktemp -d "/tmp/gvsd-login.XXXXXX") || return 1
+  if ! chmod 700 "$PIPE_DIR"; then
+    CleanupLoginRuntime
+    return 1
+  fi
+  PIPE_PATH="$PIPE_DIR/notifier.pipe"
+  if ! mkfifo "$PIPE_PATH" || ! exec 3<> "$PIPE_PATH"; then
+    CleanupLoginRuntime
+    return 1
+  fi
+
+  trap CleanupLoginRuntime EXIT
+  trap 'exit 1' HUP INT TERM
+  return 0
+}
+
+CleanupLoginRuntime() {
+  exec 3>&- 2>/dev/null || true
+
+  if [ -n "$Notifier_Process" ] && kill -0 "$Notifier_Process" 2>/dev/null; then
+    kill -TERM "$Notifier_Process" 2>/dev/null || true
+    wait "$Notifier_Process" 2>/dev/null || true
+  fi
+  Notifier_Process=""
+
+  if [ -n "$PIPE_PATH" ]; then
+    rm -f "$PIPE_PATH"
+  fi
+  if [ -n "$PIPE_DIR" ]; then
+    rmdir "$PIPE_DIR" 2>/dev/null || true
+  fi
+  PIPE_PATH=""
+  PIPE_DIR=""
+}
+
+ValidateCurrentUser() {
+  local console_user="${GMS_CONSOLE_USER:-}"
+  local local_home=""
+
+  if [ -z "$console_user" ]; then
+    console_user=$(stat -f%Su /dev/console 2>/dev/null)
+  fi
+
+  case "$CurrentUSER" in
+    ""|loginwindow|root|*/*)
+      WriteToLogs "ERROR: Refusing to run for invalid console user '$CurrentUSER'."
+      return 1
+      ;;
+  esac
+
+  if [ -z "$console_user" ] || [ "$console_user" != "$CurrentUSER" ]; then
+    WriteToLogs "ERROR: Captured user '$CurrentUSER' does not match active console user '$console_user'."
+    return 1
+  fi
+
+  local_home="$USERS_BASE_DIR/$CurrentUSER"
+  if [ ! -d "$local_home" ] || [ -L "$local_home" ]; then
+    WriteToLogs "ERROR: Expected local home $local_home is missing or is a symlink."
+    return 1
+  fi
+
+  WriteToLogs "Validated active console user $CurrentUSER with local home $local_home."
+  return 0
 }
 
 # Log the start of a function, and capture the time for its duration.
@@ -124,7 +216,8 @@ StartFunctionLog() {
 
 # Log the end of a function and its total duration.
 EndFunctionLog() {
-  local end_time=$(date +%s)
+  local end_time=""
+  end_time=$(date +%s)
   local duration=$((end_time - FUNC_START_TIME))
   WriteToLogs "### Finished ${FUNCNAME[1]} function in $duration seconds"
 }
@@ -183,14 +276,14 @@ CreateFolderAndSetPermissions() {
 # Check if the current user is an AD account.
 # Sets the global $AD variable to 1 for AD, 0 for local.
 CheckIfADAccount() {
-  local loggedInUser=$(stat -f%Su /dev/console)
-  local accountCheck=$(dscl . read /Users/$loggedInUser OriginalAuthenticationAuthority 2>/dev/null)
+  local accountCheck=""
+  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2>/dev/null)
 
   if [ "$accountCheck" != "" ]; then
-    WriteToLogs "$loggedInUser is an AD account"
+    WriteToLogs "$CurrentUSER is an AD account"
     AD=1
   else
-    WriteToLogs "$loggedInUser is a local account"
+    WriteToLogs "$CurrentUSER is a local account"
     AD=0
   fi
 }
@@ -198,7 +291,8 @@ CheckIfADAccount() {
 # Check if the current user is a student or staff.
 # Sets the global $ADUser variable to "Student" or "Staff".
 CheckADUserType() {
-  local accountCheck=$(dscl . read /Users/$CurrentUSER OriginalAuthenticationAuthority 2>/dev/null)
+  local accountCheck=""
+  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2>/dev/null)
   
   if [ "$accountCheck" != "" ] && [[ $CurrentUSER =~ ^[0-9] ]]; then
     WriteToLogs "$CurrentUSER is a student account"
@@ -449,12 +543,74 @@ RedirectIfADAccount() {
   return 0
 }
 
+ClearRedirectState() {
+  local state_path="$USERS_BASE_DIR/$CurrentUSER/$REDIRECT_STATE_REL"
+
+  if [ -e "$state_path" ] || [ -L "$state_path" ]; then
+    if rm -f "$state_path"; then
+      WriteToLogs "Cleared previous home-folder redirection state."
+    else
+      WriteToLogs "Warning: Could not clear previous redirection state $state_path."
+      return 1
+    fi
+  fi
+  return 0
+}
+
+WriteRedirectState() {
+  local local_home="$USERS_BASE_DIR/$CurrentUSER"
+  local state_path="$local_home/$REDIRECT_STATE_REL"
+  local state_dir=""
+  local folder=""
+  local link_path=""
+  local expected_target=""
+  local actual_target=""
+  local folders=("Desktop" "Documents" "Downloads" "Pictures")
+
+  if [ -z "$MYHOMEDIR" ] || [ ! -d "$MYHOMEDIR" ]; then
+    WriteToLogs "Warning: Cannot record redirection state without an available network home."
+    return 1
+  fi
+
+  for folder in "${folders[@]}"; do
+    link_path="$local_home/$folder"
+    expected_target="$MYHOMEDIR/$folder"
+    if [ ! -L "$link_path" ]; then
+      WriteToLogs "Warning: Cannot record redirection state; $link_path is not a symlink."
+      return 1
+    fi
+    actual_target=$(readlink "$link_path")
+    if [ "$actual_target" != "$expected_target" ] || [ ! -d "$expected_target" ]; then
+      WriteToLogs "Warning: Cannot record redirection state; $link_path does not resolve to available target $expected_target."
+      return 1
+    fi
+  done
+
+  state_dir=$(dirname "$state_path")
+  if ! mkdir -p "$state_dir"; then
+    WriteToLogs "Warning: Could not create redirection state directory $state_dir."
+    return 1
+  fi
+
+  if ! printf 'version=1\nnetwork_home=%s\nverified_at=%s\n' \
+      "$MYHOMEDIR" "$(date +%s)" > "$state_path"; then
+    WriteToLogs "Warning: Could not write redirection state $state_path."
+    return 1
+  fi
+  chown "$CurrentUSER" "$state_path" 2>/dev/null || WriteToLogs "Warning: Could not set owner on $state_path."
+  chmod 600 "$state_path" 2>/dev/null || WriteToLogs "Warning: Could not set permissions on $state_path."
+  WriteToLogs "Recorded verified home-folder redirection state for $MYHOMEDIR."
+  return 0
+}
+
 # Replace the default pinned Sidebar folders with new shortcuts.
 PinRedirectedFolders() {
   StartFunctionLog
-  
-  local uid=$(id -u "$CurrentUSER")
+
+  local uid=""
   local mysides_bin=""
+
+  uid=$(id -u "$CurrentUSER")
 
   for candidate in "/usr/local/bin/mysides" "/opt/homebrew/bin/mysides"; do
     if [[ -x "$candidate" ]]; then
@@ -543,8 +699,10 @@ RedirectAppFolderSafely() {
   local source_path="$1"
   local target_path="$2"
   local label="$3"
-  local source_parent="$(dirname "$source_path")"
-  local source_name="$(basename "$source_path")"
+  local source_parent=""
+  local source_name=""
+  source_parent=$(dirname "$source_path")
+  source_name=$(basename "$source_path")
   local staging_base="$source_parent/.gvsd_app_redirect_staging"
   local current_target=""
   local previous_symlink_target=""
@@ -917,13 +1075,14 @@ DeleteOldLocalHomes() {
 
   local base_dir="$USERS_BASE_DIR"
   local size_threshold_kb="$LOCAL_CONTENT_SIZE_THRESHOLD_KB"
-  local now_epoch=$(date +%s)
+  local now_epoch=""
   local user_entries=()
   local dotglob_was_set=0
   local nullglob_was_set=0
 
   CLEANUP_HOMES_DELETED_KB=0
   CLEANUP_FOLDERS_PRUNED_KB=0
+  now_epoch=$(date +%s)
 
   if [ ! -d "$base_dir" ]; then
     WriteToLogs "Warning: Local users directory $base_dir does not exist; cleanup skipped."
@@ -949,12 +1108,13 @@ DeleteOldLocalHomes() {
       continue
     fi
 
-    local username=$(basename "$dir")
+    local username=""
     local age_days=""
     local age_source=""
     local age_epoch=""
     local age_timestamp=""
 
+    username=$(basename "$dir")
     WriteToLogs "Testing local home for $username at $dir."
 
     if IsProtectedLocalHome "$username"; then
@@ -1148,8 +1308,12 @@ CleanLargeLocalContent() {
 UpdateCurrentLoginStamp() {
   StartFunctionLog
 
-  local marker_dir="$USERS_BASE_DIR/$CurrentUSER/$(dirname "$LOCAL_LOGIN_STAMP_REL")"
+  local marker_parent=""
+  local marker_dir=""
   local marker_path="$USERS_BASE_DIR/$CurrentUSER/$LOCAL_LOGIN_STAMP_REL"
+
+  marker_parent=$(dirname "$LOCAL_LOGIN_STAMP_REL")
+  marker_dir="$USERS_BASE_DIR/$CurrentUSER/$marker_parent"
 
   if [ -z "$CurrentUSER" ] || [ "$CurrentUSER" = "loginwindow" ]; then
     WriteToLogs "ERROR: Current user is not available; cannot update local login stamp."
@@ -1180,11 +1344,21 @@ OnExit() {
 
 # Wrap the sequence in a progress UI.
 display_progress() {
+  local local_home="$USERS_BASE_DIR/$CurrentUSER"
+
   WriteToLogs "Login script started (script version $SCRIPT_VERSION)"
   WriteToLogs "Current User: $CurrentUSER"
-  
-  touch "/Users/$CurrentUSER/Library/Application Support/com.gvsd.LogonScriptRun.plist"
-  chown $CurrentUSER "/Users/$CurrentUSER/Library/Preferences/com.apple.dock.plist"
+
+  if mkdir -p "$local_home/Library/Application Support"; then
+    touch "$local_home/Library/Application Support/com.gvsd.LogonScriptRun.plist" || WriteToLogs "Warning: Could not create login-run marker."
+  else
+    WriteToLogs "Warning: Could not create Application Support folder for login-run marker."
+  fi
+  if [ -e "$local_home/Library/Preferences/com.apple.dock.plist" ]; then
+    chown "$CurrentUSER" "$local_home/Library/Preferences/com.apple.dock.plist" || WriteToLogs "Warning: Could not set Dock preferences owner."
+  fi
+
+  ClearRedirectState || true
 
   CheckIfADAccount
   
@@ -1192,7 +1366,7 @@ display_progress() {
     CheckADUserType
   else
     WriteToLogs "Current user is not an AD account."
-    exit 1
+    return 1
   fi
   
   # Launch the IBM Notifier app UI with the following config, and background it.
@@ -1204,7 +1378,7 @@ display_progress() {
     -bar_title "${PROG_BAR_TITLE}" \
     -accessory_view_type "${PROG_ACCESSORY_TYPE}" \
     -timeout "${PROG_TIMEOUT_SECONDS}" \
-    -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "/tmp/${PIPE_NAME}" &
+    -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "$PIPE_PATH" &
   Notifier_Process=$!
   
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
@@ -1218,8 +1392,12 @@ display_progress() {
   WriteToLogs "Home Folder is $MYHOMEDIR"
   
   if RedirectIfADAccount; then
-    if ! PinRedirectedFolders; then
-      WriteToLogs "Warning: Sidebar favorites could not be updated; login will continue."
+    if WriteRedirectState; then
+      if ! PinRedirectedFolders; then
+        WriteToLogs "Warning: Sidebar favorites could not be updated; login will continue."
+      fi
+    else
+      WriteToLogs "Warning: Folder links could not be verified; no successful redirection state was recorded."
     fi
   else
     WriteToLogs "Warning: Folder redirection was skipped or incomplete; sidebar updates were skipped."
@@ -1236,28 +1414,28 @@ display_progress() {
   
   # Tell the progress UI to close, and clean up.
   printf '/percent 100\n' >&3
-  exec 3>&-
-  rm -f "/tmp/${PIPE_NAME}"
-  
-  # Fully kill the Notifier UI.
-  if [ -n "$Notifier_Process" ] && kill -0 "$Notifier_Process" 2>/dev/null; then
-      kill -TERM "$Notifier_Process"
-  else
-      WriteToLogs "No process found with ID $Notifier_Process"
-  fi
+  CleanupLoginRuntime
+  return 0
 }
 
 main() {
-  InitializeLoginScript
+  if ! InitializeLoginScript; then
+    return 1
+  fi
+  if ! ValidateCurrentUser; then
+    return 1
+  fi
 
   # Do the main sequence, wrapped by the progress UI.
   # Delete the stale local homes after the UI has closed, as we don't need to watch it.
-  display_progress
+  if ! display_progress; then
+    return 1
+  fi
   DeleteOldLocalHomes
   UpdateCurrentLoginStamp
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main
-  exit 0
+  exit $?
 fi

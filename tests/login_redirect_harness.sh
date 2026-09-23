@@ -104,6 +104,7 @@ fi
 
 exec 3> "$NOTIFIER_OUTPUT"
 RedirectIfADAccount
+WriteRedirectState
 exec 3>&-
 
 failures=0
@@ -118,6 +119,14 @@ expect_content "$REMOTE_HOME/Pictures/remote-only.txt" "remote only" || failures
 expect_content "$REMOTE_HOME/Desktop/retained-only.txt" "retained only" || failures=$((failures + 1))
 expect_content "$REMOTE_HOME/Desktop/retained-newer.txt" "newer retained" || failures=$((failures + 1))
 expect_content "$REMOTE_HOME/Desktop/remote-stays-newer.txt" "newer remote" || failures=$((failures + 1))
+
+redirect_state="$LOCAL_HOME/$REDIRECT_STATE_REL"
+if [ -f "$redirect_state" ] && grep -Fq "network_home=$REMOTE_HOME" "$redirect_state"; then
+  printf 'PASS state: verified redirection state recorded\n'
+else
+  printf 'FAIL state: verified redirection state missing or incorrect\n'
+  failures=$((failures + 1))
+fi
 
 if [ ! -e "$LOCAL_HOME/.gvsd_redirect_staging" ]; then
   printf 'PASS cleanup: staging directory removed\n'

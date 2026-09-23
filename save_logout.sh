@@ -4,15 +4,17 @@
 # Save & Log Out script, to be called by an Automator app. #
 ############################################################
 
-SCRIPT_VERSION="2026-09-22-1535"
+SCRIPT_VERSION="2026-09-23-1214"
+USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
 
 # Determine ConsoleUser (the logged-in user) and that user's home directory.
-CurrentUSER=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )
+CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
 # Prefer dscl to get exact NFSHomeDirectory; fall back to ~user expansion.
-USER_HOME=$(dscl . -read /Users/"${CurrentUSER}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+USER_HOME="${GMS_USER_HOME:-$(dscl . -read /Users/"${CurrentUSER}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')}"
 if [ -z "${USER_HOME}" ]; then
-  USER_HOME=$(eval echo "~${CurrentUSER}")
+  USER_HOME="${USERS_BASE_DIR}/${CurrentUSER}"
 fi
+REDIRECT_STATE_PATH="${USER_HOME}/Library/Application Support/com.gvsd.RedirectState"
 
 # Set up sync sources and destinations using the real user's home dir.
 typeset -A RSYNC_PAIRS
@@ -58,19 +60,133 @@ ERROR_MAIN_BUTTON="OK"
 Notifier_Process=""
 SYNC_PERMISSION_DENIED=0
 
-# Set up a temporary pipe for the sync progress window.
-PIPE_NAME="notif_${$}"
-PIPE_PATH="/tmp/${PIPE_NAME}"
-rm -f "${PIPE_PATH}"
-mkfifo "${PIPE_PATH}"
-exec 3<> "${PIPE_PATH}"
-
-# Ensure fifo and fd are cleaned up on exit.
-trap 'rm -f "${PIPE_PATH}"; exec 3>&- 2>/dev/null || true' EXIT
+PIPE_DIR=""
+PIPE_PATH=""
 
 #############
 # Functions #
 #############
+
+cleanup_logout_runtime() {
+  exec 3>&- 2>/dev/null || true
+
+  if [ -n "${Notifier_Process}" ] && kill -0 "${Notifier_Process}" 2>/dev/null; then
+    kill -TERM "${Notifier_Process}" 2>/dev/null || true
+    wait "${Notifier_Process}" 2>/dev/null || true
+  fi
+  Notifier_Process=""
+
+  if [ -n "${PIPE_PATH}" ]; then
+    rm -f "${PIPE_PATH}"
+  fi
+  if [ -n "${PIPE_DIR}" ]; then
+    rmdir "${PIPE_DIR}" 2>/dev/null || true
+  fi
+  PIPE_PATH=""
+  PIPE_DIR=""
+}
+
+initialize_logout_runtime() {
+  PIPE_DIR=$(mktemp -d "/tmp/gvsd-logout.XXXXXX") || return 1
+  if ! chmod 700 "${PIPE_DIR}"; then
+    cleanup_logout_runtime
+    return 1
+  fi
+  PIPE_PATH="${PIPE_DIR}/notifier.pipe"
+  if ! mkfifo "${PIPE_PATH}" || ! exec 3<> "${PIPE_PATH}"; then
+    cleanup_logout_runtime
+    return 1
+  fi
+
+  trap cleanup_logout_runtime EXIT
+  trap 'exit 1' HUP INT TERM
+  return 0
+}
+
+validate_logout_user() {
+  local console_user="${GMS_CONSOLE_USER:-}"
+
+  if [ -z "${console_user}" ]; then
+    console_user=$(stat -f%Su /dev/console 2>/dev/null)
+  fi
+
+  case "${CurrentUSER}" in
+    ""|loginwindow|root|*/*)
+      echo "Invalid console user '${CurrentUSER}'." >&2
+      return 1
+      ;;
+  esac
+
+  if [ -z "${console_user}" ] || [ "${console_user}" != "${CurrentUSER}" ]; then
+    echo "Captured user '${CurrentUSER}' does not match console user '${console_user}'." >&2
+    return 1
+  fi
+
+  if [ "${USER_HOME}" != "${USERS_BASE_DIR}/${CurrentUSER}" ] || [ ! -d "${USER_HOME}" ] || [ -L "${USER_HOME}" ]; then
+    echo "Unsafe or unavailable local home '${USER_HOME}'." >&2
+    return 1
+  fi
+
+  return 0
+}
+
+validate_managed_redirections() {
+  local state_version=""
+  local network_home=""
+  local folder=""
+  local link_path=""
+  local actual_target=""
+  local expected_target=""
+  local write_test=""
+  local write_error=""
+  local -a managed_folders=(Desktop Documents Downloads Pictures)
+
+  if [ ! -f "${REDIRECT_STATE_PATH}" ] || [ -L "${REDIRECT_STATE_PATH}" ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight failed: verified login state is missing" >> "${RSYNC_LOG}"
+    return 1
+  fi
+
+  state_version=$(sed -n 's/^version=//p' "${REDIRECT_STATE_PATH}" | head -n 1)
+  network_home=$(sed -n 's/^network_home=//p' "${REDIRECT_STATE_PATH}" | head -n 1)
+  if [ "${state_version}" != "1" ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight failed: state version is unsupported" >> "${RSYNC_LOG}"
+    return 1
+  fi
+  if [ -z "${network_home}" ] || [[ "${network_home}" != /* ]] || [ "${network_home}" = "/" ] || [ "${network_home}" = "${USER_HOME}" ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight failed: recorded network home is invalid" >> "${RSYNC_LOG}"
+    return 1
+  fi
+
+  for folder in "${managed_folders[@]}"; do
+    link_path="${USER_HOME}/${folder}"
+    expected_target="${network_home}/${folder}"
+
+    if [ ! -L "${link_path}" ]; then
+      echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight failed: ${link_path} is not a symlink" >> "${RSYNC_LOG}"
+      return 1
+    fi
+    actual_target=$(readlink "${link_path}")
+    if [ "${actual_target}" != "${expected_target}" ] || [ ! -d "${expected_target}" ]; then
+      echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight failed: ${link_path} does not point to available target ${expected_target}" >> "${RSYNC_LOG}"
+      return 1
+    fi
+  done
+
+  write_error=$(mktemp "${network_home}/.gvsd_logout_write_test.XXXXXX" 2>&1)
+  if [ "$?" -ne 0 ] || [ -z "${write_error}" ] || [ ! -f "${write_error}" ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight failed: network home is not writable: ${write_error}" >> "${RSYNC_LOG}"
+    if contains_permission_denial "${write_error}"; then
+      SYNC_PERMISSION_DENIED=1
+      return 77
+    fi
+    return 1
+  fi
+  write_test="${write_error}"
+  rm -f "${write_test}"
+
+  echo "$(date +"%Y-%m-%d %H:%M:%S") -- Redirection preflight passed for ${network_home}" >> "${RSYNC_LOG}"
+  return 0
+}
 
 shorten_path() {
   local path="${1%/}"
@@ -281,11 +397,9 @@ display_progress() {
   # Tell the progress UI to close, and clean up.
   printf 'end\n' >&3
   exec 3>&-
-  rm -f "${PIPE_PATH}"
   wait "${Notifier_Process}" 2>/dev/null || true
   Notifier_Process=""
-  # Remove the trap cleanup since we've already cleaned up here.
-  trap - EXIT
+  cleanup_logout_runtime
 
   if [ "${permission_denied}" -eq 1 ]; then
     echo "$(date +"%Y-%m-%d %H:%M:%S") -- File access permission was denied; logout stopped" >> "${RSYNC_LOG}"
@@ -307,12 +421,40 @@ display_progress() {
 # Main sequence #
 #################
 
-# Check for intentional logout.
-continue_choice=$(confirm_logout)
+main() {
+  local continue_choice=0
+  local preflight_status=0
+  local sync_status=0
 
-# Continue with the sync or cancel.
-if [ "${continue_choice}" -eq 0 ] || [ "${continue_choice}" -eq 4 ]; then
+  if ! validate_logout_user; then
+    display_sync_error "Your files cannot be saved because the current user could not be verified. Do not log out. Ask your teacher for help."
+    return 1
+  fi
+
+  continue_choice=$(confirm_logout)
+  if [ "${continue_choice}" -ne 0 ] && [ "${continue_choice}" -ne 4 ]; then
+    echo "Logout cancelled."
+    return 1
+  fi
+
   rm -f "${RSYNC_LOG}"
+  validate_managed_redirections
+  preflight_status=$?
+  if [ "${preflight_status}" -ne 0 ]; then
+    if [ "${preflight_status}" -eq 77 ]; then
+      display_sync_error "Your files were NOT saved because file access was denied. Do not log out. Ask your teacher for help."
+    else
+      display_sync_error "Your files cannot be saved because your network folders are not connected correctly. Do not log out. Ask your teacher for help."
+    fi
+    echo "Redirection preflight failed. Logout stopped; see ${RSYNC_LOG} for details."
+    return "${preflight_status}"
+  fi
+
+  if ! initialize_logout_runtime; then
+    display_sync_error "Your files cannot be saved because the save process could not start. Do not log out. Ask your teacher for help."
+    return 1
+  fi
+
   display_progress
   sync_status=$?
 
@@ -323,17 +465,17 @@ if [ "${continue_choice}" -eq 0 ] || [ "${continue_choice}" -eq 4 ]; then
       display_sync_error "Your files were NOT saved. Do not log out. Ask your teacher for help."
     fi
     echo "Save failed or was cancelled. Logout stopped; see ${RSYNC_LOG} for details."
-    exit "${sync_status}"
+    return "${sync_status}"
   fi
 
-  # Clear out this plist file if it still exists.
-  if [ -f "${USER_HOME}/Library/Application Support/com.gvsd.LogonScriptRun.plist" ]; then
-    rm -f "${USER_HOME}/Library/Application Support/com.gvsd.LogonScriptRun.plist"
-  fi
+  rm -f "${USER_HOME}/Library/Application Support/com.gvsd.LogonScriptRun.plist"
+  rm -f "${REDIRECT_STATE_PATH}"
 
-  # Log out the user.
+  # Log out the user only after every configured sync has succeeded.
   osascript -e 'tell application "loginwindow" to «event aevtrlgo»'
-else
-  echo "Logout cancelled."
-  exit 1
+}
+
+if [[ "${ZSH_EVAL_CONTEXT}" == "toplevel" ]]; then
+  main
+  exit $?
 fi
