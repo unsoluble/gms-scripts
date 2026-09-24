@@ -87,6 +87,7 @@ mount() {
 }
 
 GMS_MOUNT_RETRIES=1
+export GMS_MOUNT_RETRIES
 if CheckFolderPath "Student"; then
   printf 'FAIL mount selection: multiple matching mounts were accepted\n'
   exit 1
@@ -127,6 +128,43 @@ else
   printf 'FAIL state: verified redirection state missing or incorrect\n'
   failures=$((failures + 1))
 fi
+
+# State must never be recorded if even one managed folder is no longer the
+# exact symlink established by login.
+ClearRedirectState
+rm "$LOCAL_HOME/Downloads"
+mkdir "$LOCAL_HOME/Downloads"
+if WriteRedirectState; then
+  printf 'FAIL state: local replacement folder was accepted as verified redirection\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS state: local replacement folder prevented state creation\n'
+fi
+if [ -e "$redirect_state" ]; then
+  printf 'FAIL state: failed verification left a state file behind\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS state: failed verification left no state file\n'
+fi
+rmdir "$LOCAL_HOME/Downloads"
+ln -s "$REMOTE_HOME/Downloads" "$LOCAL_HOME/Downloads"
+WriteRedirectState
+
+# Unexpected retained staging structures are preserved for investigation and
+# cause redirection verification to report an incomplete recovery.
+mkdir -p "$LOCAL_HOME/.gvsd_redirect_staging/Documents.BAD/Documents"
+printf 'do not discard\n' > "$LOCAL_HOME/.gvsd_redirect_staging/Documents.BAD/Documents/retained.txt"
+if RedirectIfADAccount; then
+  printf 'FAIL staging: suspicious retained staging area was accepted\n'
+  failures=$((failures + 1))
+elif [ -f "$LOCAL_HOME/.gvsd_redirect_staging/Documents.BAD/Documents/retained.txt" ]; then
+  printf 'PASS staging: suspicious retained data was preserved and reported\n'
+else
+  printf 'FAIL staging: suspicious retained data was removed\n'
+  failures=$((failures + 1))
+fi
+rm -rf "$LOCAL_HOME/.gvsd_redirect_staging/Documents.BAD"
+rmdir "$LOCAL_HOME/.gvsd_redirect_staging" 2>/dev/null || true
 
 if [ ! -e "$LOCAL_HOME/.gvsd_redirect_staging" ]; then
   printf 'PASS cleanup: staging directory removed\n'

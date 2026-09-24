@@ -44,6 +44,31 @@ else
   printf 'PASS lock: overlapping workflow rejected\n'
 fi
 
+ReleaseLoginWorkflowLock
+WORKFLOW_LOCK_PATH="$USERS_DIR/$CURRENT_USER/Library/Application Support/.gvsd_workflow_lock"
+mkdir -p "$WORKFLOW_LOCK_PATH"
+printf '999999\n' > "$WORKFLOW_LOCK_PATH/pid"
+if AcquireLoginWorkflowLock; then
+  printf 'PASS lock: stale workflow lock replaced\n'
+else
+  printf 'FAIL lock: stale workflow lock was not replaced\n'
+  failures=$((failures + 1))
+fi
+ReleaseLoginWorkflowLock
+
+unsafe_lock_target="$WORKDIR/unsafe-lock-target"
+mkdir -p "$unsafe_lock_target"
+WORKFLOW_LOCK_PATH="$USERS_DIR/$CURRENT_USER/Library/Application Support/.gvsd_workflow_lock"
+ln -s "$unsafe_lock_target" "$WORKFLOW_LOCK_PATH"
+if AcquireLoginWorkflowLock; then
+  printf 'FAIL lock: symlinked workflow lock was accepted\n'
+  ReleaseLoginWorkflowLock
+  failures=$((failures + 1))
+else
+  printf 'PASS lock: symlinked workflow lock rejected\n'
+fi
+rm "$WORKFLOW_LOCK_PATH"
+
 if [ -p "$PIPE_PATH" ] && [[ "$PIPE_PATH" == /tmp/gvsd-login.*/notifier.pipe ]]; then
   printf 'PASS fifo: unique secure runtime path created\n'
 else

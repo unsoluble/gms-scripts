@@ -116,6 +116,34 @@ else
   failures=$((failures + 1))
 fi
 
+# A regular file at a managed folder path is ambiguous and must not be moved,
+# replaced, or silently converted into a symlink.
+printf 'unexpected file\n' > "$WORKDIR/source/UnsafeAppPath"
+mkdir -p "$WORKDIR/target/UnsafeAppPath"
+if RedirectAppFolderSafely "$WORKDIR/source/UnsafeAppPath" "$WORKDIR/target/UnsafeAppPath" "Unsafe app"; then
+  printf 'FAIL safety: regular file was accepted as an application folder\n'
+  failures=$((failures + 1))
+elif [ -f "$WORKDIR/source/UnsafeAppPath" ] && [ ! -L "$WORKDIR/source/UnsafeAppPath" ]; then
+  printf 'PASS safety: regular file at application path left untouched\n'
+else
+  printf 'FAIL safety: regular file at application path was changed\n'
+  failures=$((failures + 1))
+fi
+
+# An incorrect managed link may be repaired, but its unrelated target must not
+# be altered in the process.
+mkdir -p "$WORKDIR/unrelated/iMovie" "$WORKDIR/target/RepairedApp"
+printf 'unrelated data\n' > "$WORKDIR/unrelated/iMovie/keep.txt"
+ln -s "$WORKDIR/unrelated/iMovie" "$WORKDIR/source/RepairedApp"
+if RedirectAppFolderSafely "$WORKDIR/source/RepairedApp" "$WORKDIR/target/RepairedApp" "Repaired app" &&
+   [ "$(readlink "$WORKDIR/source/RepairedApp")" = "$WORKDIR/target/RepairedApp" ] &&
+   [ -f "$WORKDIR/unrelated/iMovie/keep.txt" ]; then
+  printf 'PASS repair: incorrect symlink replaced without touching its target\n'
+else
+  printf 'FAIL repair: incorrect symlink was not repaired safely\n'
+  failures=$((failures + 1))
+fi
+
 if [ "$failures" -gt 0 ]; then
   printf '\n%s application redirection harness check(s) failed.\n' "$failures"
   exit 1

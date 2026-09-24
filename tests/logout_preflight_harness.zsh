@@ -92,6 +92,55 @@ else
   print 'PASS preflight: missing state rejected'
 fi
 
+printf 'version=99\nnetwork_home=%s\nverified_at=1\n' "$NETWORK_HOME" > "$USER_DIR/$STATE_REL"
+if validate_managed_redirections; then
+  print 'FAIL preflight: unsupported state version accepted'
+  failures=$((failures + 1))
+else
+  print 'PASS preflight: unsupported state version rejected'
+fi
+
+rm -f "$USER_DIR/$STATE_REL"
+print 'not a state file' > "$WORKDIR/state-target"
+ln -s "$WORKDIR/state-target" "$USER_DIR/$STATE_REL"
+if validate_managed_redirections; then
+  print 'FAIL preflight: symlinked state file accepted'
+  failures=$((failures + 1))
+else
+  print 'PASS preflight: symlinked state file rejected'
+fi
+rm "$USER_DIR/$STATE_REL"
+
+write_state "$NETWORK_HOME"
+rm "$USER_DIR/Pictures"
+mkdir -p "$WORKDIR/WrongPictures"
+ln -s "$WORKDIR/WrongPictures" "$USER_DIR/Pictures"
+if validate_managed_redirections; then
+  print 'FAIL preflight: incorrect managed symlink target accepted'
+  failures=$((failures + 1))
+else
+  print 'PASS preflight: incorrect managed symlink target rejected'
+fi
+rm "$USER_DIR/Pictures"
+ln -s "$NETWORK_HOME/Pictures" "$USER_DIR/Pictures"
+
+# Simulate the privacy subsystem denying the final network write probe.
+mktemp() {
+  print 'mktemp: Permission denied'
+  return 1
+}
+SYNC_PERMISSION_DENIED=0
+set +e
+validate_managed_redirections
+permission_status=$?
+set -e
+if [ "$permission_status" -eq 77 ] && [ "$SYNC_PERMISSION_DENIED" -eq 1 ]; then
+  print 'PASS preflight: network write permission denial returned status 77'
+else
+  print "FAIL preflight: permission denial returned $permission_status"
+  failures=$((failures + 1))
+fi
+
 GMS_CONSOLE_USER="someone-else"
 if validate_logout_user; then
   print 'FAIL validation: mismatched console user accepted'

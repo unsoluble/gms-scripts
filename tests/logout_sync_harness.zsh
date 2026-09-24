@@ -55,8 +55,28 @@ else
   failures=$((failures + 1))
 fi
 
+if perform_rsync "$WORKDIR/missing-source/" "$WORKDIR/destination/"; then
+  print 'PASS sync: missing optional source was skipped cleanly'
+else
+  print 'FAIL sync: missing optional source reported a hard failure'
+  failures=$((failures + 1))
+fi
+
+RSYNC_MODE='wait'
 rsync() {
-  sleep 2
+  case "$RSYNC_MODE" in
+    wait)
+      sleep 2
+      ;;
+    fail)
+      print 'rsync: simulated transfer failure'
+      return 23
+      ;;
+    permission)
+      print 'rsync: Permission denied'
+      return 23
+      ;;
+  esac
 }
 
 (sleep 0.2) &
@@ -78,6 +98,40 @@ if [ "$failure_status" -eq 125 ]; then
   print 'PASS notifier: unexpected UI failure is distinguished from cancellation'
 else
   print "FAIL notifier: UI failure returned $failure_status instead of 125"
+  failures=$((failures + 1))
+fi
+
+RSYNC_MODE='fail'
+: > "$RSYNC_LOG"
+SYNC_PERMISSION_DENIED=0
+sleep 30 &
+Notifier_Process=$!
+perform_rsync "$WORKDIR/source/" "$WORKDIR/destination/"
+rsync_failure_status=$?
+kill -TERM "$Notifier_Process" 2>/dev/null || true
+wait "$Notifier_Process" 2>/dev/null || true
+Notifier_Process=""
+if [ "$rsync_failure_status" -eq 23 ]; then
+  print 'PASS sync: generic rsync failure status was preserved'
+else
+  print "FAIL sync: generic rsync failure returned $rsync_failure_status instead of 23"
+  failures=$((failures + 1))
+fi
+
+RSYNC_MODE='permission'
+: > "$RSYNC_LOG"
+SYNC_PERMISSION_DENIED=0
+sleep 30 &
+Notifier_Process=$!
+perform_rsync "$WORKDIR/source/" "$WORKDIR/destination/"
+permission_status=$?
+kill -TERM "$Notifier_Process" 2>/dev/null || true
+wait "$Notifier_Process" 2>/dev/null || true
+Notifier_Process=""
+if [ "$permission_status" -eq 77 ] && [ "$SYNC_PERMISSION_DENIED" -eq 1 ]; then
+  print 'PASS sync: rsync permission denial returned status 77'
+else
+  print "FAIL sync: permission denial returned $permission_status"
   failures=$((failures + 1))
 fi
 
