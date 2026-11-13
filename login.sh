@@ -5,8 +5,8 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-09-23-1248"
-CurrentUSER="${GMS_CURRENT_USER:-$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }' )}"
+SCRIPT_VERSION="2026-11-12-1211"
+CurrentUSER="${GMS_CURRENT_USER:-$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }')}"
 SYNCLOG="${GMS_SYNCLOG:-/Library/Logs/GVSD/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
 LOCAL_HOME="$USERS_BASE_DIR/$CurrentUSER"
@@ -18,7 +18,7 @@ OLD_AGE_THRESHOLD=60
 LOCAL_CONTENT_SIZE_THRESHOLD_KB="${GMS_LOCAL_CONTENT_SIZE_THRESHOLD_KB:-512000}"
 # Local marker used to record the last completed login for cleanup age checks.
 LOCAL_LOGIN_STAMP_REL="Library/Application Support/com.gvsd.LocalHomeLastLogin"
-# Local state proving that the managed home-folder links were verified at login.
+# L -la0cal state proving that the managed home-folder links were verified at login.
 REDIRECT_STATE_REL="Library/Application Support/com.gvsd.RedirectState"
 
 # Notifier UI paths.
@@ -84,7 +84,7 @@ NotifyBottomMessage() {
   local message="${1//$'\n'/ }"
 
   if [ -e /dev/fd/3 ]; then
-    printf '/bottom_message %s\n' "$message" >&3 2>/dev/null || true
+    printf '/bottom_message %s\n' "$message" >&3 2> /dev/null || true
   fi
 }
 
@@ -96,8 +96,8 @@ RunRsyncWithNotifier() {
   local relative_path=""
   local short_path=""
 
-  rsync -avzu --out-format='RSYNC_FILE:%n' "$source" "$destination" 2>&1 |
-    while IFS= read -r line; do
+  rsync -avzu --out-format='RSYNC_FILE:%n' "$source" "$destination" 2>&1 \
+    | while IFS= read -r line; do
       WriteToLogs "rsync: $line"
       case "$line" in
         RSYNC_FILE:*)
@@ -168,11 +168,11 @@ InitializeLoginScript() {
 }
 
 CleanupLoginRuntime() {
-  exec 3>&- 2>/dev/null || true
+  exec 3>&- 2> /dev/null || true
 
-  if [ -n "$Notifier_Process" ] && kill -0 "$Notifier_Process" 2>/dev/null; then
-    kill -TERM "$Notifier_Process" 2>/dev/null || true
-    wait "$Notifier_Process" 2>/dev/null || true
+  if [ -n "$Notifier_Process" ] && kill -0 "$Notifier_Process" 2> /dev/null; then
+    kill -TERM "$Notifier_Process" 2> /dev/null || true
+    wait "$Notifier_Process" 2> /dev/null || true
   fi
   Notifier_Process=""
 
@@ -180,7 +180,7 @@ CleanupLoginRuntime() {
     rm -f "$PIPE_PATH"
   fi
   if [ -n "$PIPE_DIR" ]; then
-    rmdir "$PIPE_DIR" 2>/dev/null || true
+    rmdir "$PIPE_DIR" 2> /dev/null || true
   fi
   PIPE_PATH=""
   PIPE_DIR=""
@@ -191,11 +191,11 @@ ValidateCurrentUser() {
   local local_home=""
 
   if [ -z "$console_user" ]; then
-    console_user=$(stat -f%Su /dev/console 2>/dev/null)
+    console_user=$(stat -f%Su /dev/console 2> /dev/null)
   fi
 
   case "$CurrentUSER" in
-    ""|loginwindow|root|*/*)
+    "" | loginwindow | root | */*)
       WriteToLogs "ERROR: Refusing to run for invalid console user '$CurrentUSER'."
       return 1
       ;;
@@ -223,7 +223,7 @@ AcquireLoginWorkflowLock() {
   WORKFLOW_LOCK_PATH="$local_home/Library/Application Support/.gvsd_workflow_lock"
   mkdir -p "$(dirname "$WORKFLOW_LOCK_PATH")" || return 1
 
-  if mkdir "$WORKFLOW_LOCK_PATH" 2>/dev/null; then
+  if mkdir "$WORKFLOW_LOCK_PATH" 2> /dev/null; then
     WORKFLOW_LOCK_OWNED=1
   else
     if [ -L "$WORKFLOW_LOCK_PATH" ] || [ ! -d "$WORKFLOW_LOCK_PATH" ]; then
@@ -232,9 +232,9 @@ AcquireLoginWorkflowLock() {
     fi
 
     if [ -f "$WORKFLOW_LOCK_PATH/pid" ] && [ ! -L "$WORKFLOW_LOCK_PATH/pid" ]; then
-      existing_pid=$(cat "$WORKFLOW_LOCK_PATH/pid" 2>/dev/null)
+      existing_pid=$(cat "$WORKFLOW_LOCK_PATH/pid" 2> /dev/null)
     fi
-    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2> /dev/null; then
       WriteToLogs "ERROR: Another login/logout workflow is active for $CurrentUSER with PID $existing_pid."
       return 1
     fi
@@ -249,7 +249,7 @@ AcquireLoginWorkflowLock() {
 
   printf '%s\n' "$$" > "$WORKFLOW_LOCK_PATH/pid"
   printf '%s\n' "login" > "$WORKFLOW_LOCK_PATH/operation"
-  chmod 700 "$WORKFLOW_LOCK_PATH" 2>/dev/null || true
+  chmod 700 "$WORKFLOW_LOCK_PATH" 2> /dev/null || true
   WriteToLogs "Acquired login workflow lock for $CurrentUSER."
   return 0
 }
@@ -334,15 +334,43 @@ CreateFolderAndSetPermissions() {
 
 # Check if the current user is an AD account.
 # Sets the global $AD variable to 1 for AD, 0 for local.
-CheckIfADAccount() {
-  local accountCheck=""
-  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2>/dev/null)
 
-  if [ "$accountCheck" != "" ]; then
-    WriteToLogs "$CurrentUSER is an AD account"
+CheckIfADAccountOLD() {
+  local accountCheck=""
+  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2> /dev/null)
+
+  if [ "$accountCheck" = "" ]; then
+    echo "User '$CurrentUSER' is an Active Directory account."
+    # 	WriteToLogs "$CurrentUSER is an AD account"
     AD=1
   else
-    WriteToLogs "$CurrentUSER is a local account"
+    # WriteToLogs "$CurrentUSER is a local account"
+    echo "User '$CurrentUSER' is a local Mac account."
+    AD=0
+  fi
+}
+
+CheckIfADAccount() {
+  local accountCheck=""
+  accountCheck=$(dscl . -read "/Users/$CurrentUSER" OriginalNodeName AuthenticationAuthority SMBPrimaryGroupSID 2> /dev/null)
+
+  if [ "$accountCheck" = "" ]; then
+    echo "User '$CurrentUSER' is an Active Directory account."
+    # 	WriteToLogs "$CurrentUSER is an AD account"
+    AD=1
+  else
+    # WriteToLogs "$CurrentUSER is a local account"
+    echo "User '$CurrentUSER' is a local Mac account."
+    AD=0
+  fi
+
+  if echo $accountCheck | grep -Eqi "$CurrentUSER@sd61.bc.ca|Active Directory|LocalCachedUser"; then
+    # WriteToLogs "$CurrentUSER is an AD account"
+    echo "User '$CurrentUSER' is an Active Directory account."
+    AD=1
+  else
+    # WriteToLogs "$CurrentUSER is a local account"
+    echo "User '$CurrentUSER' is a local Mac account."
     AD=0
   fi
 }
@@ -351,8 +379,8 @@ CheckIfADAccount() {
 # Sets the global $ADUser variable to "Student" or "Staff".
 CheckADUserType() {
   local accountCheck=""
-  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2>/dev/null)
-  
+  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2> /dev/null)
+
   if [ "$accountCheck" != "" ] && [[ $CurrentUSER =~ ^[0-9] ]]; then
     WriteToLogs "$CurrentUSER is a student account"
     ADUser='Student'
@@ -449,9 +477,9 @@ MergeRedirectStaging() {
   for stage_root in "${stage_roots[@]-}"; do
     [ -n "$stage_root" ] || continue
     staged_path="$stage_root/$folder"
-    if [[ "$(basename "$stage_root")" != ${folder}.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]] ||
-       [ ! -d "$stage_root" ] || [ -L "$stage_root" ] ||
-       [ ! -d "$staged_path" ] || [ -L "$staged_path" ]; then
+    if [[ "$(basename "$stage_root")" != ${folder}.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]] \
+      || [ ! -d "$stage_root" ] || [ -L "$stage_root" ] \
+      || [ ! -d "$staged_path" ] || [ -L "$staged_path" ]; then
       WriteToLogs "Warning: Retained staging area $stage_root does not contain the expected $folder folder; it was left untouched."
       merge_failed=1
       continue
@@ -471,7 +499,7 @@ MergeRedirectStaging() {
     fi
   done
 
-  rmdir "$staging_base" 2>/dev/null || true
+  rmdir "$staging_base" 2> /dev/null || true
   return "$merge_failed"
 }
 
@@ -491,14 +519,14 @@ RedirectIfADAccount() {
   fi
 
   case "$MYHOMEDIR" in
-    "$USERS_BASE_DIR"|"$USERS_BASE_DIR"/*)
+    "$USERS_BASE_DIR" | "$USERS_BASE_DIR"/*)
       WriteToLogs "Warning: Refusing to redirect into local users path $MYHOMEDIR."
       EndFunctionLog
       return 1
       ;;
   esac
 
-  write_test=$(mktemp "$MYHOMEDIR/.gvsd_login_write_test.XXXXXX" 2>/dev/null)
+  write_test=$(mktemp "$MYHOMEDIR/.gvsd_login_write_test.XXXXXX" 2> /dev/null)
   if [ -z "$write_test" ] || [ ! -f "$write_test" ]; then
     WriteToLogs "Warning: Network home $MYHOMEDIR is not writable; folder redirection skipped."
     EndFunctionLog
@@ -543,10 +571,10 @@ RedirectIfADAccount() {
         EndFunctionLog
         return 1
       fi
-      chmod 700 "$staging_base" 2>/dev/null || true
-      chown "$CurrentUSER" "$staging_base" 2>/dev/null || true
+      chmod 700 "$staging_base" 2> /dev/null || true
+      chown "$CurrentUSER" "$staging_base" 2> /dev/null || true
 
-      stage_root=$(mktemp -d "$staging_base/${folder}.XXXXXX" 2>/dev/null)
+      stage_root=$(mktemp -d "$staging_base/${folder}.XXXXXX" 2> /dev/null)
       if [ -z "$stage_root" ] || [ ! -d "$stage_root" ]; then
         WriteToLogs "Warning: Could not create staging area for $local_path; remaining redirections skipped."
         EndFunctionLog
@@ -556,7 +584,7 @@ RedirectIfADAccount() {
 
       if ! mv "$local_path" "$staged_path"; then
         WriteToLogs "Warning: Could not stage $local_path; original folder left in place."
-        rmdir "$stage_root" 2>/dev/null || true
+        rmdir "$stage_root" 2> /dev/null || true
         EndFunctionLog
         return 1
       fi
@@ -572,8 +600,8 @@ RedirectIfADAccount() {
       if [ -n "$staged_path" ] && [ -d "$staged_path" ] && [ ! -e "$local_path" ]; then
         if mv "$staged_path" "$local_path"; then
           WriteToLogs "Restored staged local folder to $local_path."
-          rmdir "$stage_root" 2>/dev/null || true
-          rmdir "$staging_base" 2>/dev/null || true
+          rmdir "$stage_root" 2> /dev/null || true
+          rmdir "$staging_base" 2> /dev/null || true
         else
           WriteToLogs "CRITICAL: Could not restore $local_path; retained data remains at $staged_path."
         fi
@@ -652,12 +680,12 @@ WriteRedirectState() {
   fi
 
   if ! printf 'version=1\nnetwork_home=%s\nverified_at=%s\n' \
-      "$MYHOMEDIR" "$(date +%s)" > "$state_path"; then
+    "$MYHOMEDIR" "$(date +%s)" > "$state_path"; then
     WriteToLogs "Warning: Could not write redirection state $state_path."
     return 1
   fi
-  chown "$CurrentUSER" "$state_path" 2>/dev/null || WriteToLogs "Warning: Could not set owner on $state_path."
-  chmod 600 "$state_path" 2>/dev/null || WriteToLogs "Warning: Could not set permissions on $state_path."
+  chown "$CurrentUSER" "$state_path" 2> /dev/null || WriteToLogs "Warning: Could not set owner on $state_path."
+  chmod 600 "$state_path" 2> /dev/null || WriteToLogs "Warning: Could not set permissions on $state_path."
   WriteToLogs "Recorded verified home-folder redirection state for $MYHOMEDIR."
   return 0
 }
@@ -693,7 +721,7 @@ PinRedirectedFolders() {
     local url="$2"
 
     WriteToLogs "Updating sidebar favorite for $name"
-    run_as_current_user "$mysides_bin" remove "$name" >/dev/null 2>&1 || true
+    run_as_current_user "$mysides_bin" remove "$name" > /dev/null 2>&1 || true
 
     if run_as_current_user "$mysides_bin" add "$name" "$url" >> "$SYNCLOG" 2>&1; then
       WriteToLogs "Updated sidebar favorite for $name -> $url"
@@ -715,7 +743,7 @@ PinRedirectedFolders() {
 
   update_sidebar_item "Music" "file:///${USERS_BASE_DIR#/}/$CurrentUSER/Music" || status=1
 
-  run_as_current_user killall sharedfilelistd 2>/dev/null || true
+  run_as_current_user killall sharedfilelistd 2> /dev/null || true
 
   EndFunctionLog
   return "$status"
@@ -724,7 +752,7 @@ PinRedirectedFolders() {
 CreateDocumentLibraryFolders() {
   StartFunctionLog
   local status=0
-  
+
   # Set of folders to create
   local directories=(
     "Documents/Application Support"
@@ -744,9 +772,9 @@ CreateDocumentLibraryFolders() {
     "Music/GarageBand"
     "Library/Application Support/Google"
     "Library/Application Support/Google/Chrome"
-    "Library/Application Support/Google/Chrome/Profile 1" 
+    "Library/Application Support/Google/Chrome/Profile 1"
   )
-  
+
   for dir in "${directories[@]}"; do
     CreateFolderAndSetPermissions "$LOCAL_HOME/$dir" "$CurrentUSER" || status=1
   done
@@ -797,10 +825,10 @@ RedirectAppFolderSafely() {
       WriteToLogs "Warning: Could not create $label staging directory $staging_base."
       return 1
     fi
-    chmod 700 "$staging_base" 2>/dev/null || true
-    chown "$CurrentUSER" "$staging_base" 2>/dev/null || true
+    chmod 700 "$staging_base" 2> /dev/null || true
+    chown "$CurrentUSER" "$staging_base" 2> /dev/null || true
 
-    stage_root=$(mktemp -d "$staging_base/${source_name}.XXXXXX" 2>/dev/null)
+    stage_root=$(mktemp -d "$staging_base/${source_name}.XXXXXX" 2> /dev/null)
     if [ -z "$stage_root" ] || [ ! -d "$stage_root" ]; then
       WriteToLogs "Warning: Could not create a staging area for $source_path."
       return 1
@@ -809,8 +837,8 @@ RedirectAppFolderSafely() {
 
     if ! mv "$source_path" "$staged_path"; then
       WriteToLogs "Warning: Could not stage existing $label folder $source_path; it was left in place."
-      rmdir "$stage_root" 2>/dev/null || true
-      rmdir "$staging_base" 2>/dev/null || true
+      rmdir "$stage_root" 2> /dev/null || true
+      rmdir "$staging_base" 2> /dev/null || true
       return 1
     fi
     WriteToLogs "Staged existing $label folder $source_path at $staged_path."
@@ -825,8 +853,8 @@ RedirectAppFolderSafely() {
       if [ -n "$staged_path" ] && [ -d "$staged_path" ] && [ ! -e "$source_path" ]; then
         if mv "$staged_path" "$source_path"; then
           WriteToLogs "Restored the staged $label folder to $source_path."
-          rmdir "$stage_root" 2>/dev/null || true
-          rmdir "$staging_base" 2>/dev/null || true
+          rmdir "$stage_root" 2> /dev/null || true
+          rmdir "$staging_base" 2> /dev/null || true
         else
           WriteToLogs "CRITICAL: Could not restore $label; retained data remains at $staged_path."
         fi
@@ -850,9 +878,9 @@ RedirectAppFolderSafely() {
   for stage_root in "${stage_roots[@]-}"; do
     [ -n "$stage_root" ] || continue
     staged_path="$stage_root/$source_name"
-    if [[ "$(basename "$stage_root")" != ${source_name}.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]] ||
-       [ ! -d "$stage_root" ] || [ -L "$stage_root" ] ||
-       [ ! -d "$staged_path" ] || [ -L "$staged_path" ]; then
+    if [[ "$(basename "$stage_root")" != ${source_name}.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]] \
+      || [ ! -d "$stage_root" ] || [ -L "$stage_root" ] \
+      || [ ! -d "$staged_path" ] || [ -L "$staged_path" ]; then
       WriteToLogs "Warning: Suspicious $label staging area $stage_root was left untouched."
       continue
     fi
@@ -871,7 +899,7 @@ RedirectAppFolderSafely() {
     fi
   done
 
-  rmdir "$staging_base" 2>/dev/null || true
+  rmdir "$staging_base" 2> /dev/null || true
   return "$merge_failed"
 }
 
@@ -903,8 +931,8 @@ RemoveManagedFolderRedirect() {
   fi
 
   if mkdir -p "$source_path"; then
-    chown "$CurrentUSER" "$source_path" 2>/dev/null || WriteToLogs "Warning: Could not set owner on restored local $label folder $source_path."
-    chmod 700 "$source_path" 2>/dev/null || WriteToLogs "Warning: Could not set permissions on restored local $label folder $source_path."
+    chown "$CurrentUSER" "$source_path" 2> /dev/null || WriteToLogs "Warning: Could not set owner on restored local $label folder $source_path."
+    chmod 700 "$source_path" 2> /dev/null || WriteToLogs "Warning: Could not set permissions on restored local $label folder $source_path."
     WriteToLogs "Removed legacy $label redirection and restored local folder $source_path; network data at $managed_target was left untouched."
     return 0
   fi
@@ -921,7 +949,7 @@ RemoveManagedFolderRedirect() {
 LinkLibraryFolders() {
   StartFunctionLog
   local status=0
-  
+
   # Ensure shared Minecraft directory exists
   if ! mkdir -p "$USERS_BASE_DIR/Shared/minecraft"; then
     WriteToLogs "Warning: Failed to create shared Minecraft cache directory $USERS_BASE_DIR/Shared/minecraft."
@@ -931,34 +959,33 @@ LinkLibraryFolders() {
     WriteToLogs "Warning: Failed to create local Minecraft directory $LOCAL_HOME/Library/Application Support/minecraft."
     status=1
   fi
-  
+
   local mineFolders=("assets" "versions")
-  
+
   for m in "${mineFolders[@]}"; do
     RedirectAppFolderSafely \
       "$LOCAL_HOME/Library/Application Support/minecraft/$m" \
       "$USERS_BASE_DIR/Shared/minecraft/$m" \
       "Minecraft $m" || status=1
   done
-  
+
   RemoveManagedFolderRedirect \
     "$LOCAL_HOME/Library/Application Support/Dock" \
     "$LOCAL_HOME/Documents/Application Support/Dock" \
     "Dock" || status=1
 
   local appSubfolders=("iMovie")
-  
+
   for x in "${appSubfolders[@]}"; do
     RedirectAppFolderSafely \
       "$LOCAL_HOME/Library/Application Support/$x" \
       "$LOCAL_HOME/Documents/Application Support/$x" \
       "$x" || status=1
   done
-  
+
   EndFunctionLog
   return "$status"
 }
-
 
 LinkTwineFolders() {
   StartFunctionLog
@@ -972,7 +999,7 @@ LinkTwineFolders() {
     return 1
   fi
 
-  chown "$CurrentUSER" "$twine_target" 2>/dev/null || WriteToLogs "Warning: Failed to set ownership of $twine_target"
+  chown "$CurrentUSER" "$twine_target" 2> /dev/null || WriteToLogs "Warning: Failed to set ownership of $twine_target"
 
   EndFunctionLog
 }
@@ -1043,12 +1070,12 @@ FixLibraryPerms() {
     WriteToLogs "Warning: Minecraft application signature verification failed: $signature_error"
     return 1
   }
-  
+
   adjust_permissions() {
     local dir_path="$1"
     local desired_perm="$2"
     local owner="$3"
-  
+
     if [ -d "$dir_path" ]; then
       if [ -n "$owner" ]; then
         chown -R "$owner" "$dir_path" || return 1
@@ -1067,19 +1094,19 @@ FixLibraryPerms() {
       return 1
     fi
   }
-  
-    # The launcher currently requires student write access to update itself.
-    # Retain that behavior while logging signature damage for diagnosis.
-    adjust_permissions "/Applications/Minecraft.app" "777" || status=1
-    verify_minecraft_app_signature || status=1
-    set_shared_minecraft_permissions || status=1
-    set_private_minecraft_permissions || status=1
-    adjust_permissions "$LOCAL_HOME/Documents/Application Support/minecraft" "700" "$CurrentUSER" || status=1
-    adjust_permissions "$LOCAL_HOME/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER" || status=1
-    adjust_permissions "$LOCAL_HOME/Music/Audio Music Apps" "700" "$CurrentUSER" || status=1
-    adjust_permissions "$LOCAL_HOME/Music/GarageBand" "700" "$CurrentUSER" || status=1
-    adjust_permissions "$LOCAL_HOME/Library/Application Support/Google" "700" "$CurrentUSER" || status=1
-  
+
+  # The launcher currently requires student write access to update itself.
+  # Retain that behavior while logging signature damage for diagnosis.
+  adjust_permissions "/Applications/Minecraft.app" "777" || status=1
+  verify_minecraft_app_signature || status=1
+  set_shared_minecraft_permissions || status=1
+  set_private_minecraft_permissions || status=1
+  adjust_permissions "$LOCAL_HOME/Documents/Application Support/minecraft" "700" "$CurrentUSER" || status=1
+  adjust_permissions "$LOCAL_HOME/Documents/Application Support/minecraft/saves" "700" "$CurrentUSER" || status=1
+  adjust_permissions "$LOCAL_HOME/Music/Audio Music Apps" "700" "$CurrentUSER" || status=1
+  adjust_permissions "$LOCAL_HOME/Music/GarageBand" "700" "$CurrentUSER" || status=1
+  adjust_permissions "$LOCAL_HOME/Library/Application Support/Google" "700" "$CurrentUSER" || status=1
+
   EndFunctionLog
   return "$status"
 }
@@ -1230,7 +1257,7 @@ DeleteOldLocalHomes() {
     age_days="$LOCAL_HOME_AGE_DAYS"
     age_source="$LOCAL_HOME_AGE_SOURCE"
     age_epoch="$LOCAL_HOME_AGE_EPOCH"
-    age_timestamp=$(date -r "$age_epoch" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "unknown")
+    age_timestamp=$(date -r "$age_epoch" "+%Y-%m-%d %H:%M:%S" 2> /dev/null || echo "unknown")
 
     WriteToLogs "Age signal for $username: source=$age_source; timestamp=$age_timestamp; age=${age_days} days."
 
@@ -1272,10 +1299,10 @@ IsLocalOnlyAccount() {
 
   # A missing directory-service record is treated as an abandoned network home,
   # while an existing record without AD metadata is a persistent local account.
-  if ! dscl . -read "/Users/$username" >/dev/null 2>&1; then
+  if ! dscl . -read "/Users/$username" > /dev/null 2>&1; then
     return 1
   fi
-  auth_authority=$(dscl . -read "/Users/$username" OriginalAuthenticationAuthority 2>/dev/null || true)
+  auth_authority=$(dscl . -read "/Users/$username" OriginalAuthenticationAuthority 2> /dev/null || true)
   [ -z "$auth_authority" ]
 }
 
@@ -1290,9 +1317,9 @@ GetLocalHomeAge() {
   LOCAL_HOME_AGE_EPOCH=""
 
   if [ -f "$marker" ]; then
-    marker_epoch=$(stat -f "%m" "$marker" 2>/dev/null)
+    marker_epoch=$(stat -f "%m" "$marker" 2> /dev/null)
     if [[ "$marker_epoch" =~ ^[0-9]+$ ]]; then
-      LOCAL_HOME_AGE_DAYS=$(( (now_epoch - marker_epoch) / 86400 ))
+      LOCAL_HOME_AGE_DAYS=$(((now_epoch - marker_epoch) / 86400))
       [ "$LOCAL_HOME_AGE_DAYS" -lt 0 ] && LOCAL_HOME_AGE_DAYS=0
       LOCAL_HOME_AGE_SOURCE="login-stamp:$marker"
       LOCAL_HOME_AGE_EPOCH="$marker_epoch"
@@ -1311,7 +1338,7 @@ GetPathSizeKB() {
   local target="$1"
   local size_kb=""
 
-  size_kb=$(du -sk "$target" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  size_kb=$(du -sk "$target" 2> /dev/null | awk 'NR == 1 { print $1 }')
   if [[ "$size_kb" =~ ^[0-9]+$ ]]; then
     printf '%s' "$size_kb"
     return 0
@@ -1421,8 +1448,8 @@ UpdateCurrentLoginStamp() {
   fi
 
   if mkdir -p "$marker_dir" && touch "$marker_path"; then
-    chown "$CurrentUSER" "$marker_dir" "$marker_path" 2>/dev/null || WriteToLogs "Warning: could not set owner on $marker_dir and its login stamp"
-    chmod 600 "$marker_path" 2>/dev/null || WriteToLogs "Warning: could not set permissions on $marker_path"
+    chown "$CurrentUSER" "$marker_dir" "$marker_path" 2> /dev/null || WriteToLogs "Warning: could not set owner on $marker_dir and its login stamp"
+    chmod 600 "$marker_path" 2> /dev/null || WriteToLogs "Warning: could not set permissions on $marker_path"
     WriteToLogs "Updated local login stamp for $CurrentUSER at $marker_path."
   else
     WriteToLogs "ERROR: Failed to update local login stamp for $CurrentUSER at $marker_path."
@@ -1433,10 +1460,9 @@ UpdateCurrentLoginStamp() {
   EndFunctionLog
 }
 
-
-OnExit() {
-  jamf policy -event synctohome
-}
+# OnExit() {
+#  sh /Library/Application\ Support/gvsd/Glanford_Preferences.sh
+# }
 
 #################
 # MAIN SEQUENCE #
@@ -1461,14 +1487,14 @@ display_progress() {
   ClearRedirectState || true
 
   CheckIfADAccount
-  
+
   if [ $AD = "1" ]; then
     CheckADUserType
   else
     WriteToLogs "Current user is not an AD account."
     return 1
   fi
-  
+
   # Launch the IBM Notifier app UI with the following config, and background it.
   "${APP_PATH}" \
     -type "popup" \
@@ -1480,17 +1506,17 @@ display_progress() {
     -timeout "${PROG_TIMEOUT_SECONDS}" \
     -accessory_view_payload "${PROG_ACCESSORY_PAYLOAD}" < "$PIPE_PATH" &
   Notifier_Process=$!
-  
+
   if [ "$ADUser" = "Student" ] || [ "$ADUser" = "Staff" ]; then
     if ! CheckFolderPath "$ADUser"; then
       RecordLoginWarning "Network home detection failed; redirection will be skipped."
     fi
   else
-    WriteToLogs "Unknown ADUser value: $ADUser" 
+    WriteToLogs "Unknown ADUser value: $ADUser"
   fi
-    
+
   WriteToLogs "Home Folder is $MYHOMEDIR"
-  
+
   if RedirectIfADAccount; then
     if WriteRedirectState; then
       if ! PinRedirectedFolders; then
