@@ -1,11 +1,11 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 ####################################################################################
 # Script to handle folder redirections and permissions for student & staff logins. #
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-11-12-1211"
+SCRIPT_VERSION="2026-11-20-1201"
 CurrentUSER="${GMS_CURRENT_USER:-$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }')}"
 SYNCLOG="${GMS_SYNCLOG:-/Library/Logs/GVSD/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
@@ -335,21 +335,6 @@ CreateFolderAndSetPermissions() {
 # Check if the current user is an AD account.
 # Sets the global $AD variable to 1 for AD, 0 for local.
 
-CheckIfADAccountOLD() {
-  local accountCheck=""
-  accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2> /dev/null)
-
-  if [ "$accountCheck" = "" ]; then
-    echo "User '$CurrentUSER' is an Active Directory account."
-    # 	WriteToLogs "$CurrentUSER is an AD account"
-    AD=1
-  else
-    # WriteToLogs "$CurrentUSER is a local account"
-    echo "User '$CurrentUSER' is a local Mac account."
-    AD=0
-  fi
-}
-
 CheckIfADAccount() {
   local accountCheck=""
   accountCheck=$(dscl . -read "/Users/$CurrentUSER" OriginalNodeName AuthenticationAuthority SMBPrimaryGroupSID 2> /dev/null)
@@ -357,16 +342,6 @@ CheckIfADAccount() {
   if [ "$accountCheck" = "" ]; then
     echo "User '$CurrentUSER' is an Active Directory account."
     # 	WriteToLogs "$CurrentUSER is an AD account"
-    AD=1
-  else
-    # WriteToLogs "$CurrentUSER is a local account"
-    echo "User '$CurrentUSER' is a local Mac account."
-    AD=0
-  fi
-
-  if echo $accountCheck | grep -Eqi "$CurrentUSER@sd61.bc.ca|Active Directory|LocalCachedUser"; then
-    # WriteToLogs "$CurrentUSER is an AD account"
-    echo "User '$CurrentUSER' is an Active Directory account."
     AD=1
   else
     # WriteToLogs "$CurrentUSER is a local account"
@@ -381,7 +356,7 @@ CheckADUserType() {
   local accountCheck=""
   accountCheck=$(dscl . read /Users/"$CurrentUSER" OriginalAuthenticationAuthority 2> /dev/null)
 
-  if [ "$accountCheck" != "" ] && [[ $CurrentUSER =~ ^[0-9] ]]; then
+  if [ "$accountCheck" = "" ] && [[ $CurrentUSER =~ ^[0-9]{2} ]]; then
     WriteToLogs "$CurrentUSER is a student account"
     ADUser='Student'
   else
@@ -509,6 +484,8 @@ RedirectIfADAccount() {
   local local_home="$USERS_BASE_DIR/$CurrentUSER"
   local staging_base="$local_home/.gvsd_redirect_staging"
   local write_test=""
+  local move_output=""
+  local move_status=0
   local folders=("Pictures" "Documents" "Downloads" "Desktop")
   local folder=""
 
@@ -582,7 +559,15 @@ RedirectIfADAccount() {
       fi
       staged_path="$stage_root/$folder"
 
-      if ! mv "$local_path" "$staged_path"; then
+      if move_output=$(mv "$local_path" "$staged_path" 2>&1); then
+        [ -z "$move_output" ] || WriteToLogs "Staging move output: $move_output"
+      else
+        move_status=$?
+        WriteToLogs "Staging move failed (exit $move_status): source=$local_path; destination=$staged_path"
+        WriteToLogs "Staging move output: $move_output"
+        WriteToLogs "Staging execution identity: $(id 2>&1)"
+        WriteToLogs "Staging directory details (permissions, ACLs, flags, extended attributes):
+$(ls -ldeO@ "$local_home" "$local_path" "$staging_base" "$stage_root" 2>&1)"
         WriteToLogs "Warning: Could not stage $local_path; original folder left in place."
         rmdir "$stage_root" 2> /dev/null || true
         EndFunctionLog
@@ -702,6 +687,7 @@ PinRedirectedFolders() {
   for candidate in "/usr/local/bin/mysides" "/opt/homebrew/bin/mysides"; do
     if [[ -x "$candidate" ]]; then
       mysides_bin="$candidate"
+      WriteToLogs "Mysides is installed at $candidate"
       break
     fi
   done
@@ -721,9 +707,9 @@ PinRedirectedFolders() {
     local url="$2"
 
     WriteToLogs "Updating sidebar favorite for $name"
-    run_as_current_user "$mysides_bin" remove "$name" > /dev/null 2>&1 || true
+    launchctl asuser "$uid" "$mysides_bin" remove "$name" > /dev/null 2>&1 || true
 
-    if run_as_current_user "$mysides_bin" add "$name" "$url" >> "$SYNCLOG" 2>&1; then
+    if launchctl asuser "$uid" "$mysides_bin" add "$name" "$url" >> "$SYNCLOG" 2>&1; then
       WriteToLogs "Updated sidebar favorite for $name -> $url"
     else
       WriteToLogs "Error: failed to add sidebar favorite for $name -> $url"
