@@ -5,7 +5,7 @@
 ####################################################################################
 
 # Set global variables.
-SCRIPT_VERSION="2026-11-20-1201"
+SCRIPT_VERSION="2026-11-20-1300"
 CurrentUSER="${GMS_CURRENT_USER:-$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /Loginwindow/ { print $3 }')}"
 SYNCLOG="${GMS_SYNCLOG:-/Library/Logs/GVSD/LibrarySync.log}"
 USERS_BASE_DIR="${GMS_USERS_BASE_DIR:-/Users}"
